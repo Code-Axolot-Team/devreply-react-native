@@ -75,25 +75,71 @@ links itself after `configure`; with expo-router add `app/+native-intent.tsx`:
 `export function redirectSystemPath({ path }) { return path.includes('devreply=') ? '/' : path }`. If your router
 swallows links first, pass them on with `DevReply.handle(url)`.
 
-**Push notifications**, like Intercom: your app keeps its own push setup and passes DevReply the token and, on
-Android, DevReply's messages. With @react-native-firebase/messaging:
+**Push notifications**, like Intercom: your app keeps its own push setup and passes DevReply the token, taps and,
+on Android, DevReply's messages. DevReply never takes over your notification handling. With
+@react-native-firebase/messaging (its modular API; the old `messaging()` calls crash on v26):
 
 ```ts
-import messaging from '@react-native-firebase/messaging'
+import {
+  getMessaging, getAPNSToken, getToken, onTokenRefresh, onMessage, setBackgroundMessageHandler,
+  getInitialNotification, onNotificationOpenedApp,
+} from '@react-native-firebase/messaging'
 
+const m = getMessaging()
 // iOS: the APNs token; Android: the FCM token.
-const token = Platform.OS === 'ios' ? await messaging().getAPNSToken() : await messaging().getToken()
+const token = Platform.OS === 'ios' ? await getAPNSToken(m) : await getToken(m)
 if (token) DevReply.registerPushToken(token)
-messaging().onTokenRefresh((t) => Platform.OS === 'android' && DevReply.registerPushToken(t))
+onTokenRefresh(m, (t) => { if (Platform.OS === 'android') DevReply.registerPushToken(t) })
 
 // Android: DevReply shows its own notification; a tap opens the conversation.
-messaging().onMessage(async (m) => { if (DevReply.handlePush(m.data)) return /* your pushes */ })
-messaging().setBackgroundMessageHandler(async (m) => { if (DevReply.handlePush(m.data)) return }) // index.js
+onMessage(m, async (msg) => { if (DevReply.handlePush(msg.data)) return /* your pushes */ })
+setBackgroundMessageHandler(m, async (msg) => { if (DevReply.handlePush(msg.data)) return }) // index.js
+
+// Taps (iOS, and Android notifications your library shows), including the one that launched the app.
+getInitialNotification(m).then((n) => n && DevReply.handleNotificationOpened(n.data))
+onNotificationOpenedApp(m, (n) => { if (DevReply.handleNotificationOpened(n.data)) return /* yours */ })
 ```
 
-On iOS, expo-notifications works too: `DevReply.registerPushToken((await Notifications.getDevicePushTokenAsync()).data)`.
+With expo-notifications: `DevReply.registerPushToken((await Notifications.getDevicePushTokenAsync()).data)` on iOS,
+and pass the whole tap response (Expo puts the push's custom keys inside it; DevReply finds them):
+
+```ts
+Notifications.getLastNotificationResponseAsync().then((r) => r && DevReply.handleNotificationOpened(r))
+Notifications.addNotificationResponseReceivedListener((r) => { if (DevReply.handleNotificationOpened(r)) return /* yours */ })
+```
+
+`handleNotificationOpened` returns false for your own notifications. The dashboard's push card shows
+"✓ Taps open the chat" once a tap opened a conversation.
 Upload your push keys in the dashboard (the APNs key; the Firebase service account for Android). The chat asks
 for the notification permission only after the user's first message.
+
+## Sign-in, sign-out and account deletion
+
+If your app has accounts:
+
+```ts
+DevReply.login(user.id)                // after sign-in: your own id for the user, never an email or a secret
+DevReply.logout()                      // on every sign-out and account switch
+const ok = await DevReply.deleteUser() // in your delete-account flow; false if DevReply couldn't be reached
+```
+
+- `login` labels the user for your team (the dashboard shows it as "User ID (your app)") and lets your backend
+  delete them by it. It doesn't merge chats across devices: the id isn't verified, so it never gives one device
+  another's conversations. If another id was signed in on this device, DevReply logs out first.
+- `logout` revokes this install and its push token; the device forgets the chat and the next person starts empty.
+  The conversations stay with your team.
+- `deleteUser` deletes the user's name, email, attributes, conversations, messages and files, then logs out.
+  Apple requires account deletion in the app.
+
+Your backend can delete a user too, with a read-and-write secret key (never in an app):
+
+```sh
+curl -X DELETE "https://api.devreply.com/v1/project/users?user_id=<your id>" \
+  -H "Authorization: Bearer $DEVREPLY_SECRET_KEY"
+# {"deleted": 1}: every DevReply user with that id, on every device. ?id=<DevReply's user id> for one user.
+```
+
+Your team can also delete a user in the dashboard (the inbox's user panel → Delete user).
 
 ## How it's built
 

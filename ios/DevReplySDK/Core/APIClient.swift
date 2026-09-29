@@ -45,6 +45,11 @@ struct APIClient: Sendable {
         let _: Empty = try await send("POST", "v1/deep_link_opened", token: token)
     }
 
+    /// A tap on a DevReply notification opened its conversation: Settings shows taps work.
+    func pushOpened(token: String) async throws {
+        let _: Empty = try await send("POST", "v1/push_opened", token: token)
+    }
+
     /// For responses without a body (204).
     struct Empty: Decodable {}
 
@@ -106,20 +111,32 @@ struct APIClient: Sendable {
     }
 
     func updateProfile(
-        token: String, name: String?, email: String?, attributes: [String: DevReplyAttribute?] = [:]
+        token: String, name: String?, email: String?, attributes: [String: DevReplyAttribute?] = [:], userID: String? = nil
     ) async throws -> Profile {
-        try await send("PATCH", "v1/me", token: token, body: ProfileBody(name: name, email: email, attributes: attributes))
+        try await send("PATCH", "v1/me", token: token, body: ProfileBody(name: name, email: email, attributes: attributes, userID: userID))
+    }
+
+    /// `DevReply.logout()`: this install's token and push token stop working.
+    func logout(token: String) async throws {
+        let _: Empty = try await send("POST", "v1/logout", token: token)
+    }
+
+    /// `DevReply.deleteUser()`: the user's personal data, conversations and files are deleted.
+    func deleteUser(token: String) async throws {
+        let _: Empty = try await send("DELETE", "v1/me", token: token)
     }
 
     private struct ProfileBody: Encodable {
         let name: String?
         let email: String?
         let attributes: [String: DevReplyAttribute?]
+        let userID: String?
 
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             try c.encodeIfPresent(name, forKey: .name)
             try c.encodeIfPresent(email, forKey: .email)
+            try c.encodeIfPresent(userID, forKey: .userID)
             // nil values must reach the server as JSON null (= remove the attribute).
             var attrs = c.nestedContainer(keyedBy: AnyKey.self, forKey: .attributes)
             for (key, value) in attributes {
@@ -127,7 +144,10 @@ struct APIClient: Sendable {
             }
         }
 
-        private enum Keys: String, CodingKey { case name, email, attributes }
+        private enum Keys: String, CodingKey {
+            case name, email, attributes
+            case userID = "user_id"
+        }
     }
 
     private struct AnyKey: CodingKey {

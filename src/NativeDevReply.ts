@@ -4,6 +4,9 @@ import { TurboModuleRegistry, type CodegenTypes, type TurboModule } from 'react-
 
 export interface Spec extends TurboModule {
   configure(publicKey: string): void
+  login(userId: string): void
+  logout(): void
+  deleteUser(): Promise<boolean>
   present(category: string | null): void
   setUser(name: string | null, email: string | null): void
   setAttributes(attributes: CodegenTypes.UnsafeObject): void
@@ -11,6 +14,7 @@ export interface Spec extends TurboModule {
   setShowsUnreadBubble(shows: boolean): void
   registerPushToken(token: string): void
   handlePush(data: CodegenTypes.UnsafeObject): boolean
+  handleNotificationOpened(data: CodegenTypes.UnsafeObject): boolean
   handle(url: string): void
   setLocale(tag: string | null): void
   readonly onUnreadChange: CodegenTypes.EventEmitter<{ count: number }>

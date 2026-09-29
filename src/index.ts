@@ -19,6 +19,30 @@ function conversationIn(url: string): string | null {
   return id && UUID.test(id) ? id : null
 }
 
+/**
+ * DevReply's keys from whatever a push library hands over for a tapped notification: the data itself, or
+ * an Expo response (a notification straight from APNs has its keys in `request.trigger.payload`, and
+ * `content.data` is null).
+ */
+function devReplyData(notification: unknown): Record<string, string> | null {
+  const get = (o: unknown, ...path: string[]): unknown =>
+    path.reduce<unknown>((v, k) => (v && typeof v === 'object' ? (v as Record<string, unknown>)[k] : undefined), o)
+  const candidates = [
+    notification,
+    get(notification, 'data'),
+    get(notification, 'payload'),
+    get(notification, 'notification', 'request', 'trigger', 'payload'),
+    get(notification, 'notification', 'request', 'content', 'data'),
+    get(notification, 'request', 'trigger', 'payload'),
+    get(notification, 'request', 'content', 'data'),
+  ]
+  for (const c of candidates) {
+    const id = get(c, 'devreply_conversation_id')
+    if (typeof id === 'string' && UUID.test(id)) return { devreply_conversation_id: id }
+  }
+  return null
+}
+
 let listening = false
 
 const DevReply = {
@@ -49,6 +73,28 @@ const DevReply = {
     return true
   },
 
+  /**
+   * After your user signs in: your own id for them (never an email or a secret). The team sees it next
+   * to the user, and your backend can delete the user by it. If someone else was signed in on this
+   * device, DevReply logs them out first, so nobody sees someone else's chats.
+   */
+  login(userId: string): void {
+    Native.login(userId)
+  },
+
+  /** When your user signs out: DevReply forgets this device's chats; the next person starts empty. */
+  logout(): void {
+    Native.logout()
+  },
+
+  /**
+   * When your user deletes their account: deletes their name, email, attributes, conversations,
+   * messages and files from DevReply, then logs out. Resolves to false if DevReply couldn't be reached.
+   */
+  deleteUser(): Promise<boolean> {
+    return Native.deleteUser()
+  },
+
   /** Opens the chat over the current screen. With a category, straight into a new conversation. */
   present(category?: DevReplyCategory): void {
     Native.present(category ?? null)
@@ -70,6 +116,21 @@ const DevReply = {
   /** Custom attributes the team sees next to the user (plan, account id…). `null` removes one. */
   setAttributes(attributes: Record<string, DevReplyAttribute>): void {
     Native.setAttributes(attributes)
+  },
+
+  /**
+   * The user tapped a notification: pass what your push library gives you, and DevReply opens the
+   * conversation when it's one of DevReply's (returns false for the app's own). Your push library owns
+   * notifications; DevReply only answers "is this mine?". Call it from the tap handlers, including the
+   * one for a tap that launched the app:
+   * - expo-notifications: `addNotificationResponseReceivedListener(r => DevReply.handleNotificationOpened(r))`
+   *   and `getLastNotificationResponseAsync()` (the response itself);
+   * - @react-native-firebase/messaging, notifee and others: the notification's data.
+   * On Android, DevReply's own notifications (from `handlePush`) open the conversation by themselves.
+   */
+  handleNotificationOpened(notification: unknown): boolean {
+    const data = devReplyData(notification)
+    return data ? Native.handleNotificationOpened(data) : false
   },
 
   /** Unread replies from the team. */
@@ -100,9 +161,9 @@ const DevReply = {
     Native.registerPushToken(token)
   },
 
-  /** Whether this push (`RemoteMessage.data`) is one of DevReply's. */
-  isDevReplyPush(data: Record<string, unknown> | undefined): boolean {
-    return typeof data?.devreply_conversation_id === 'string'
+  /** Whether this push (its data, or an Expo notification response) is one of DevReply's. */
+  isDevReplyPush(notification: unknown): boolean {
+    return devReplyData(notification) !== null
   },
 
   /**
@@ -112,7 +173,7 @@ const DevReply = {
    * its pushes itself.
    */
   handlePush(data: Record<string, unknown> | undefined): boolean {
-    if (Platform.OS !== 'android' || !data || !DevReply.isDevReplyPush(data)) return false
+    if (Platform.OS !== 'android' || !data || !devReplyData(data)) return false
     const strings: Record<string, string> = {}
     for (const [k, v] of Object.entries(data)) strings[k] = String(v ?? '')
     return Native.handlePush(strings)

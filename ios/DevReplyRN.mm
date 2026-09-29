@@ -32,6 +32,23 @@
   [_bridge configure:publicKey];
 }
 
+- (void)login:(NSString *)userId
+{
+  [_bridge login:userId];
+}
+
+- (void)logout
+{
+  [_bridge logout];
+}
+
+- (void)deleteUser:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject
+{
+  [_bridge deleteUser:^(BOOL ok) {
+    resolve(@(ok));
+  }];
+}
+
 - (void)present:(NSString *)category
 {
   [_bridge present:category];
@@ -60,6 +77,11 @@
 - (void)registerPushToken:(NSString *)hexToken
 {
   [_bridge registerPushToken:hexToken];
+}
+
+- (NSNumber *)handleNotificationOpened:(NSDictionary *)data
+{
+  return @([_bridge handleNotificationOpened:data]);
 }
 
 - (NSNumber *)handlePush:(NSDictionary *)data

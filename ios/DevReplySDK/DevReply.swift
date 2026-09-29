@@ -18,6 +18,35 @@ public enum DevReply {
         Messenger.shared.configure(publicKey: publicKey, apiURL: apiURL)
     }
 
+    // MARK: Signed-in users
+
+    /// After your user signs in: your own id for them (never an email or anything secret). The team sees it
+    /// next to the user, and your backend can delete the user by it. If another user was signed in on this
+    /// device, DevReply logs them out first, so nobody sees someone else's chats.
+    ///
+    /// ```swift
+    /// DevReply.login(userID: account.id)
+    /// DevReply.setUser(name: account.name, email: account.email)
+    /// ```
+    public static func login(userID: String) {
+        Messenger.shared.login(userID: userID)
+    }
+
+    /// When your user signs out: DevReply forgets this device's chats, and the next person starts empty.
+    /// Their conversations stay with your team. Call it on every sign-out (and account switch).
+    public static func logout() {
+        Messenger.shared.logout()
+    }
+
+    /// When your user deletes their account (Apple requires account deletion in the app): deletes their
+    /// name, email, attributes, conversations, messages and files from DevReply, then logs out. Returns
+    /// false if DevReply couldn't be reached; try again, or delete from your backend
+    /// (`DELETE /v1/project/users?user_id=…` with a secret key).
+    @discardableResult
+    public static func deleteUser() async -> Bool {
+        await Messenger.shared.deleteUser()
+    }
+
     /// Tells DevReply who the user is, if your app knows. With a name set, the chat doesn't ask for one.
     /// Call it after `configure`, e.g. after sign-in.
     public static func setUser(name: String?, email: String? = nil) {
@@ -88,10 +117,20 @@ public enum DevReply {
     }
 
     /// If your app has its own `UNUserNotificationCenterDelegate`, forward taps. Returns true when it was
-    /// a DevReply notification (the messenger opens on that conversation).
+    /// a DevReply notification (the messenger opens on that conversation); false for your own.
     @discardableResult
     public static func handleNotificationResponse(_ response: UNNotificationResponse) -> Bool {
         guard let id = PushHandling.conversationID(in: response.notification.request.content.userInfo) else { return false }
+        PushHandling.didReceive(conversationID: id)
+        return true
+    }
+
+    /// A notification the user tapped, as the data a push library passes on (the notification's
+    /// `userInfo` or its custom keys): opens that conversation when it's DevReply's, and returns false for
+    /// anything else. The React Native and Flutter packages call this from the app's push library.
+    @discardableResult
+    public static func handleNotificationOpened(userInfo: [AnyHashable: Any]) -> Bool {
+        guard let id = PushHandling.conversationID(in: userInfo) else { return false }
         PushHandling.didReceive(conversationID: id)
         return true
     }
@@ -131,7 +170,7 @@ public enum DevReply {
     }
 
     /// At a cold start the app's window may not be up yet when the link arrives: wait for it briefly.
-    private static func openWhenReady(conversationID: UUID, attempts: Int) {
+    static func openWhenReady(conversationID: UUID, attempts: Int) {
         if topViewController() != nil || attempts <= 0 {
             open(conversationID: conversationID)
             return
@@ -145,6 +184,13 @@ public enum DevReply {
     /// Opens the messenger over the current screen. With a category, it goes straight to a new conversation.
     public static func present(category: DevReplyCategory? = nil) {
         presentMessenger(MessengerView(startCategory: category))
+    }
+
+    /// Closes the messenger if it's open (the user logged out).
+    static func closeMessenger() {
+        if Messenger.shared.isPresented, let top = topViewController(), top is UIHostingController<MessengerView> {
+            top.dismiss(animated: true)
+        }
     }
 
     /// Opens the messenger on one conversation (from a push or the in-app banner).

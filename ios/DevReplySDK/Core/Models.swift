@@ -1,7 +1,7 @@
 import Foundation
 
 /// Version of this SDK. Sent on install registration and compared with each block's `min_sdk`.
-public let devReplySDKVersion = "0.4.0"
+public let devReplySDKVersion = "0.4.3"
 
 /// What a conversation is about. Set by the start button the user picked (spec 05).
 public enum DevReplyCategory: String, Codable, Sendable, CaseIterable {

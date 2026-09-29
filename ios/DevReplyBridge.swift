@@ -19,6 +19,18 @@ public final class DevReplyBridge: NSObject {
         }
     }
 
+    @objc public func login(_ userID: String) {
+        Task { @MainActor in DevReply.login(userID: userID) }
+    }
+
+    @objc public func logout() {
+        Task { @MainActor in DevReply.logout() }
+    }
+
+    @objc public func deleteUser(_ done: @escaping @Sendable (Bool) -> Void) {
+        Task { @MainActor in done(await DevReply.deleteUser()) }
+    }
+
     @objc public func present(_ category: String?) {
         Task { @MainActor in
             DevReply.present(category: category.flatMap(DevReplyCategory.init(rawValue:)))
@@ -51,6 +63,15 @@ public final class DevReplyBridge: NSObject {
     @objc public func handle(_ url: String) {
         guard let link = URL(string: url) else { return }
         Task { @MainActor in _ = DevReply.handle(link) }
+    }
+
+    /// A tapped notification's data: opens the conversation when it's DevReply's (after configure, if the
+    /// tap launched the app).
+    @objc public func handleNotificationOpened(_ data: [String: Any]) -> Bool {
+        guard PushHandling.conversationID(in: data) != nil else { return false }
+        let userInfo = data
+        Task { @MainActor in _ = DevReply.handleNotificationOpened(userInfo: userInfo) }
+        return true
     }
 
     @objc public func registerPushToken(_ hex: String) {

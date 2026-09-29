@@ -1,6 +1,6 @@
 {
   "name": "@devreply/react-native",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "DevReply for React Native: the native in-app chat between your app's users and you.",
   "main": "build/index.js",
   "types": "build/index.d.ts",

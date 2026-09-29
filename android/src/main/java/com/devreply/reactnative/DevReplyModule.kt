@@ -34,6 +34,18 @@ class DevReplyModule(private val context: ReactApplicationContext) : NativeDevRe
     }
   }
 
+  override fun login(userId: String) {
+    main.post { DevReply.login(userId) }
+  }
+
+  override fun logout() {
+    main.post { DevReply.logout() }
+  }
+
+  override fun deleteUser(promise: com.facebook.react.bridge.Promise) {
+    main.post { DevReply.deleteUser { ok -> promise.resolve(ok) } }
+  }
+
   override fun present(category: String?) {
     main.post {
       DevReply.present(screen, DevReplyCategory.entries.firstOrNull { it.name.equals(category, ignoreCase = true) })
@@ -65,6 +77,11 @@ class DevReplyModule(private val context: ReactApplicationContext) : NativeDevRe
 
   override fun registerPushToken(token: String) {
     DevReply.registerPush(context, token)
+  }
+
+  override fun handleNotificationOpened(data: ReadableMap): Boolean {
+    val values = data.toHashMap().mapValues { (_, v) -> v?.toString().orEmpty() }
+    return DevReply.handleNotificationOpened(context.currentActivity ?: context, values)
   }
 
   override fun handlePush(data: ReadableMap): Boolean {

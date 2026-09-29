@@ -33,9 +33,36 @@ final class Messenger {
         return count < steps.count ? steps[count] : 6 * 3600
     }
 
+    /// A notification tap that came before `configure`: opened right after it.
+    @ObservationIgnored private var pendingConversation: UUID?
+
+    /// A tap on a DevReply notification: open its conversation (after `configure` if it came first), and
+    /// tell the server once per launch that taps reach the chat.
+    func openWhenConfigured(conversationID id: UUID) {
+        if client == nil {
+            pendingConversation = id
+        } else {
+            DevReply.openWhenReady(conversationID: id, attempts: 10)
+            reportPushOpened()
+        }
+    }
+
+    @ObservationIgnored private var reportedPushOpened = false
+
+    private func reportPushOpened() {
+        guard client != nil, !reportedPushOpened else { return }
+        reportedPushOpened = true
+        Task { _ = try? await authorized { try await $0.pushOpened(token: $1) } }
+    }
+
     func configure(publicKey: String, apiURL: URL) {
         self.publicKey = publicKey
         client = APIClient(baseURL: apiURL)
+        if let account = keychainAccount {
+            Keychain.wipeAfterReinstall(account: account)
+            // Signed in as someone else than this install's user (the app called login before configure).
+            if let id = hostUserID, let current = Keychain.userID(for: account), current != id { forgetInstall() }
+        }
         registering = nil
         keyRefusals = 0
         keyRetryAt = nil
@@ -47,7 +74,13 @@ final class Messenger {
         PushManager.shared.start()
         UnreadBubble.shared.start()
         startWatchingForReplies()
+        if let id = pendingConversation {
+            pendingConversation = nil
+            DevReply.openWhenReady(conversationID: id, attempts: 10)
+            reportPushOpened()
+        }
         Task {
+            await sendUserID()
             if let user = hostUser { try? await saveProfile(name: user.name, email: user.email) }
             await flushAttributes()
             await refresh()
@@ -170,6 +203,79 @@ final class Messenger {
         if (try? await authorized({ try await $0.updateProfile(token: $1, name: nil, email: nil, attributes: batch) })) != nil {
             for key in batch.keys where pendingAttributes[key] == batch[key] { pendingAttributes.removeValue(forKey: key) }
         }
+    }
+
+    // MARK: Signed-in user (spec 03)
+
+    /// The app's id for the signed-in user (`DevReply.login`).
+    private var hostUserID: String?
+
+    func login(userID: String) {
+        let id = userID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        // Another person on this device: they start from a new, empty install.
+        if let account = keychainAccount, let current = Keychain.userID(for: account), current != id { logout() }
+        hostUserID = id
+        guard client != nil else { return }
+        Task { await sendUserID() }
+    }
+
+    /// Labels this install's user with the app's id. The server refuses another id for the same user (409):
+    /// then this install belonged to someone else, so start a new one.
+    private func sendUserID(retry: Bool = true) async {
+        guard let id = hostUserID, let account = keychainAccount else { return }
+        do {
+            profile = try await authorized { try await $0.updateProfile(token: $1, name: nil, email: nil, userID: id) }
+            Keychain.setUserID(id, for: account)
+        } catch DevReplyError.server(409) where retry {
+            logout(keepUserID: true)
+            await sendUserID(retry: false)
+        } catch {}
+    }
+
+    /// `DevReply.logout()`: the server stops accepting this install (and its push token), the device
+    /// forgets it, and the next person starts from a new, empty install. Conversations stay for the team.
+    func logout(keepUserID: Bool = false) {
+        if let client, let account = keychainAccount, let token = Keychain.token(for: account) {
+            Task { try? await client.logout(token: token) }
+        }
+        let id = hostUserID
+        forgetInstall()
+        if keepUserID { hostUserID = id }
+        guard client != nil else { return }
+        Task {
+            await refresh()
+            await PushManager.shared.sendTokenIfNeeded()
+        }
+    }
+
+    /// `DevReply.deleteUser()`: deletes the user's data on the server, then forgets the install. False if
+    /// the server couldn't be reached (try again later).
+    func deleteUser() async -> Bool {
+        guard client != nil else { return false }
+        guard (try? await authorized({ try await $0.deleteUser(token: $1) })) != nil else { return false }
+        forgetInstall()
+        Task {
+            await refresh()
+            await PushManager.shared.sendTokenIfNeeded()
+        }
+        return true
+    }
+
+    /// Everything this device knew about the user: the token, who they were, their chats on screen.
+    private func forgetInstall() {
+        if let account = keychainAccount {
+            Keychain.deleteToken(for: account)
+            Keychain.deleteUserID(for: account)
+        }
+        registering = nil
+        hostUserID = nil
+        hostUser = nil
+        pendingAttributes = [:]
+        conversations = []
+        profile = nil
+        PushManager.shared.forgetSentToken()
+        DevReply.closeMessenger()
     }
 
     func setUser(name: String?, email: String?) {

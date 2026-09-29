@@ -27,7 +27,8 @@ final class PushManager: NSObject {
 
     /// After `configure`: learn the current permission, and if the app already has it, register.
     func start() {
-        // If the host app has no notification delegate, DevReply handles taps and foreground pushes itself.
+        // Only if the app has no notification delegate: DevReply then handles taps and foreground pushes
+        // itself. Otherwise the app's own handling asks DevReply (see NotificationDelegate).
         let center = UNUserNotificationCenter.current()
         if center.delegate == nil { center.delegate = NotificationDelegate.shared }
         Task { await refreshStatus(registerIfAllowed: true) }
@@ -84,6 +85,11 @@ final class PushManager: NSObject {
         Task { await sendTokenIfNeeded() }
     }
 
+    /// After a logout the device gets a new install: send the token to it again.
+    func forgetSentToken() {
+        lastSentToken = nil
+    }
+
     /// Sends the token once the install exists; called again after `configure`.
     func sendTokenIfNeeded() async {
         guard let token = pendingToken, token != lastSentToken else { return }
@@ -136,10 +142,14 @@ final class PushManager: NSObject {
 /// their own delegate and forward to `DevReply.presentationOptions` / `handleNotificationResponse`.
 @MainActor
 enum PushHandling {
-    /// The DevReply conversation a notification is about, or nil if it isn't ours.
+    /// The DevReply conversation a notification is about, or nil if it isn't ours. Pushes carry it twice:
+    /// `devreply.conversation_id`, and flat as `devreply_conversation_id` (what JavaScript and Dart
+    /// libraries pass on as the notification's data).
     nonisolated static func conversationID(in userInfo: [AnyHashable: Any]) -> UUID? {
-        guard let info = userInfo["devreply"] as? [String: Any], let id = info["conversation_id"] as? String else { return nil }
-        return UUID(uuidString: id)
+        if let info = userInfo["devreply"] as? [String: Any], let id = info["conversation_id"] as? String {
+            return UUID(uuidString: id)
+        }
+        return (userInfo["devreply_conversation_id"] as? String).flatMap(UUID.init(uuidString:))
     }
 
     /// Foreground: DevReply's own banner (unless that conversation is on screen); keep it in the list.
@@ -151,12 +161,17 @@ enum PushHandling {
         return [.list, .sound]
     }
 
-    /// Tap: open the messenger on that conversation.
+    /// Tap: open the messenger on that conversation. Before `configure` (a tap that launched a React
+    /// Native or Flutter app), it opens once the app configures DevReply.
     static func didReceive(conversationID id: UUID) {
-        DevReply.open(conversationID: id)
+        Messenger.shared.openWhenConfigured(conversationID: id)
     }
 }
 
+/// DevReply's notification delegate, only for apps that have none: DevReply never takes the app's
+/// notifications over. Apps with their own delegate (or a push library: Firebase Messaging,
+/// expo-notifications…) keep it and ask DevReply about each notification: `DevReply.presentationOptions(for:)`,
+/// `handleNotificationResponse(_:)`, or `handleNotificationOpened(userInfo:)` from JavaScript and Dart.
 final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate, Sendable {
     static let shared = NotificationDelegate()
 

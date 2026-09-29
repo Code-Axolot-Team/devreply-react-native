@@ -48,6 +48,6 @@ android {
 
 dependencies {
   implementation "com.facebook.react:react-android"
-  implementation "com.github.Code-Axolot-Team:devreply-android:0.4.2"
+  implementation "com.github.Code-Axolot-Team:devreply-android:0.4.3"
   implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
 }
