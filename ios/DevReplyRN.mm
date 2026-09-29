@@ -62,6 +62,12 @@
   [_bridge registerPushToken:hexToken];
 }
 
+- (NSNumber *)handlePush:(NSDictionary *)data
+{
+  // iOS shows DevReply's pushes itself (APNs).
+  return @NO;
+}
+
 - (void)handle:(NSString *)url
 {
   [_bridge handle:url];

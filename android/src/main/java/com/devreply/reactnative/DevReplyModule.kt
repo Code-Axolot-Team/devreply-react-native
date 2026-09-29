@@ -63,8 +63,14 @@ class DevReplyModule(private val context: ReactApplicationContext) : NativeDevRe
     main.post { DevReply.handle(screen, android.net.Uri.parse(url)) }
   }
 
-  // Android push comes with FCM support in the SDK; nothing to do yet.
-  override fun registerPushToken(hexToken: String) {}
+  override fun registerPushToken(token: String) {
+    DevReply.registerPush(context, token)
+  }
+
+  override fun handlePush(data: ReadableMap): Boolean {
+    val values = data.toHashMap().mapValues { (_, v) -> v?.toString().orEmpty() }
+    return DevReply.handlePush(context, values)
+  }
 
   override fun invalidate() {
     scope.cancel()

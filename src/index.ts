@@ -91,12 +91,31 @@ const DevReply = {
   },
 
   /**
-   * iOS: the APNs device token, as hex (e.g. from expo-notifications `getDevicePushTokenAsync()`).
-   * DevReply never asks for permission itself before the user writes; the chat offers it.
-   * Android push comes later: this does nothing there.
+   * The device's push token, so replies arrive as notifications. iOS: the APNs token as hex
+   * (@react-native-firebase/messaging `getAPNSToken()`, or expo-notifications `getDevicePushTokenAsync()`).
+   * Android: the FCM token (`messaging().getToken()` and `onTokenRefresh`). DevReply never asks for
+   * permission itself before the user writes; the chat offers it.
    */
   registerPushToken(token: string): void {
-    if (Platform.OS === 'ios') Native.registerPushToken(token)
+    Native.registerPushToken(token)
+  },
+
+  /** Whether this push (`RemoteMessage.data`) is one of DevReply's. */
+  isDevReplyPush(data: Record<string, unknown> | undefined): boolean {
+    return typeof data?.devreply_conversation_id === 'string'
+  },
+
+  /**
+   * Android: shows DevReply's push (a reply from the team) as a notification; a tap opens that
+   * conversation. Call it from `messaging().onMessage` and `messaging().setBackgroundMessageHandler`.
+   * Returns false for any other message (handle those yourself), and on iOS, where DevReply shows
+   * its pushes itself.
+   */
+  handlePush(data: Record<string, unknown> | undefined): boolean {
+    if (Platform.OS !== 'android' || !data || !DevReply.isDevReplyPush(data)) return false
+    const strings: Record<string, string> = {}
+    for (const [k, v] of Object.entries(data)) strings[k] = String(v ?? '')
+    return Native.handlePush(strings)
   },
 }
 

@@ -75,9 +75,25 @@ links itself after `configure`; with expo-router add `app/+native-intent.tsx`:
 `export function redirectSystemPath({ path }) { return path.includes('devreply=') ? '/' : path }`. If your router
 swallows links first, pass them on with `DevReply.handle(url)`.
 
-**Push (iOS):** pass the APNs device token as hex, e.g. from expo-notifications:
-`DevReply.registerPushToken((await Notifications.getDevicePushTokenAsync()).data)`, and upload your APNs key in
-the dashboard. Android push comes later.
+**Push notifications**, like Intercom: your app keeps its own push setup and passes DevReply the token and, on
+Android, DevReply's messages. With @react-native-firebase/messaging:
+
+```ts
+import messaging from '@react-native-firebase/messaging'
+
+// iOS: the APNs token; Android: the FCM token.
+const token = Platform.OS === 'ios' ? await messaging().getAPNSToken() : await messaging().getToken()
+if (token) DevReply.registerPushToken(token)
+messaging().onTokenRefresh((t) => Platform.OS === 'android' && DevReply.registerPushToken(t))
+
+// Android: DevReply shows its own notification; a tap opens the conversation.
+messaging().onMessage(async (m) => { if (DevReply.handlePush(m.data)) return /* your pushes */ })
+messaging().setBackgroundMessageHandler(async (m) => { if (DevReply.handlePush(m.data)) return }) // index.js
+```
+
+On iOS, expo-notifications works too: `DevReply.registerPushToken((await Notifications.getDevicePushTokenAsync()).data)`.
+Upload your push keys in the dashboard (the APNs key; the Firebase service account for Android). The chat asks
+for the notification permission only after the user's first message.
 
 ## How it's built
 

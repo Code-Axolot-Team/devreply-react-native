@@ -9,7 +9,8 @@ export interface Spec extends TurboModule {
   setAttributes(attributes: CodegenTypes.UnsafeObject): void
   getUnreadCount(): number
   setShowsUnreadBubble(shows: boolean): void
-  registerPushToken(hexToken: string): void
+  registerPushToken(token: string): void
+  handlePush(data: CodegenTypes.UnsafeObject): boolean
   handle(url: string): void
   setLocale(tag: string | null): void
   readonly onUnreadChange: CodegenTypes.EventEmitter<{ count: number }>
