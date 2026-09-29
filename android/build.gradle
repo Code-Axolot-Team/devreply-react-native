@@ -1,0 +1,31 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.devreply.reactnative'
+version = '0.3.2'
+
+android {
+  namespace "com.devreply.reactnative"
+  defaultConfig {
+    minSdkVersion 26
+    versionCode 1
+    versionName "0.3.2"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+repositories {
+  google()
+  mavenCentral()
+  maven { url 'https://jitpack.io' }
+}
+
+dependencies {
+  // The native DevReply Android SDK (Kotlin, Jetpack Compose), from GitHub through JitPack.
+  implementation 'com.github.Code-Axolot-Team:devreply-android:0.3.2'
+  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+}

@@ -1,0 +1,75 @@
+{
+  "name": "@devreply/react-native",
+  "version": "0.3.2",
+  "description": "DevReply for React Native: the native in-app chat between your app's users and you.",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "scripts": {
+    "build": "node internal/module_scripts/build.js",
+    "clean": "node internal/module_scripts/clean.js",
+    "lint": "eslint src/",
+    "test": "node internal/module_scripts/test.js",
+    "prepare": "node scripts/sync-ios-sdk.mjs && node internal/module_scripts/prepare.js",
+    "open:ios": "node internal/module_scripts/open-ios.js",
+    "open:android": "node internal/module_scripts/open-android.js",
+    "sync-ios-sdk": "node scripts/sync-ios-sdk.mjs"
+  },
+  "keywords": [
+    "react-native",
+    "expo",
+    "devreply",
+    "in-app-chat",
+    "customer-support",
+    "ios",
+    "android"
+  ],
+  "repository": "https://github.com/Code-Axolot-Team/devreply-react-native",
+  "bugs": {
+    "url": "https://github.com/Code-Axolot-Team/devreply-react-native/issues"
+  },
+  "author": "Code Axolot <hello@devreply.com> (https://devreply.com)",
+  "license": "MIT",
+  "homepage": "https://github.com/Code-Axolot-Team/devreply-react-native#readme",
+  "dependencies": {},
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@types/jest": "^29.2.1",
+    "@types/react": "~19.2.2",
+    "babel-preset-expo": "~57.0.13",
+    "eslint": "~9.39.4",
+    "eslint-config-universe": "^15.0.3",
+    "expo": "^57.0.25",
+    "jest": "^29.7.0",
+    "jest-expo": "~57.0.5",
+    "prettier": "^3.0.0",
+    "react-native": "0.86.3",
+    "typescript": "^5.9.2",
+    "react": "19.2.3"
+  },
+  "jest": {
+    "preset": "jest-expo",
+    "roots": [
+      "<rootDir>/src"
+    ]
+  },
+  "peerDependencies": {
+    "expo": "*",
+    "react": "*",
+    "react-native": "*"
+  },
+  "files": [
+    "build",
+    "src",
+    "ios",
+    "android/build.gradle",
+    "android/src",
+    "app.plugin.js",
+    "expo-module.config.json",
+    "scripts/sync-ios-sdk.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

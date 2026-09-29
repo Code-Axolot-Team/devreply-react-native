@@ -1,0 +1,35 @@
+name: Bug report
+description: Something in the DevReply React Native package doesn't work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: And what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Open the chat\n2. …"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: SDK version
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: "React Native and Expo versions, iOS or Android version, device"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Never paste secret keys (sk_…) or your users' data.

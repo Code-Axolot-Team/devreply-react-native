@@ -1,0 +1,6 @@
+Archivo Black: Copyright 2017 The Archivo Black Project Authors (https://github.com/Omnibus-Type/ArchivoBlack)
+Space Grotesk: Copyright 2020 The Space Grotesk Project Authors (https://github.com/floriankarsten/space-grotesk)
+
+Both fonts are licensed under the SIL Open Font License, Version 1.1: https://openfontlicense.org
+They are bundled here unmodified in design; Space Grotesk is cut into static Regular, Medium and Bold instances
+and both are subset to Latin, as allowed by the license.

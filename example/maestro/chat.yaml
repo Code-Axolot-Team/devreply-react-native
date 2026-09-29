@@ -1,0 +1,64 @@
+# The React Native example against the live API: the JS buttons open the native chat, a message goes
+# out, the team's reply (sent by a test script as "Founder reply <NONCE>") comes back as the native
+# unread bubble and as the JS unread count. Needs a throwaway app's keys in example/.env.local.
+#   maestro test -e NONCE=123 maestro/chat.yaml     (with the reply script running)
+appId: com.devreply.reactnative.example
+---
+- launchApp:
+    clearState: true
+    clearKeychain: true
+- extendedWaitUntil:
+    visible: "Talk to the developer."
+    timeout: 20000
+- takeScreenshot: rn-1-app
+- tapOn:
+    id: "openMessenger"
+- extendedWaitUntil:
+    visible: "Question"
+    timeout: 20000
+- takeScreenshot: rn-2-home
+- tapOn: "Question"
+- tapOn:
+    id: "devreply.profile.name"
+- inputText: "RN Tester"
+- tapOn:
+    id: "devreply.profile.save"
+- tapOn:
+    id: "devreply.composer"
+- inputText: "Bubble test ${NONCE}"
+- tapOn:
+    id: "devreply.send"
+- extendedWaitUntil:
+    visible: "Thanks, we got it!"
+    timeout: 15000
+- takeScreenshot: rn-3-sent
+- tapOn:
+    id: "devreply.emailask.skip"
+    optional: true
+- tapOn:
+    id: "devreply.push.notnow"
+    optional: true
+- tapOn:
+    id: "devreply.back"
+    optional: true
+- tapOn:
+    text: "Back"
+    optional: true
+- tapOn:
+    text: "Close"
+    optional: true
+- extendedWaitUntil:
+    visible: "Talk to the developer."
+    timeout: 10000
+- extendedWaitUntil:
+    visible:
+      id: "devreply.bubble"
+    timeout: 120000
+- assertVisible: "Unread: 1"
+- takeScreenshot: rn-4-bubble
+- tapOn:
+    id: "devreply.bubble"
+- extendedWaitUntil:
+    visible: "Founder reply ${NONCE}"
+    timeout: 20000
+- takeScreenshot: rn-5-reply
