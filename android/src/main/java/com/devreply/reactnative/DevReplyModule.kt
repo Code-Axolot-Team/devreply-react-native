@@ -56,6 +56,17 @@ class DevReplyModule : Module() {
       main.post { DevReply.showsUnreadBubble = shows }
     }
 
+    Function("setLocale") { tag: String? ->
+      main.post { DevReply.setLocale(tag) }
+    }
+
+    Function("handle") { url: String ->
+      main.post {
+        val context = appContext.currentActivity ?: appContext.reactContext ?: return@post
+        DevReply.handle(context, android.net.Uri.parse(url))
+      }
+    }
+
     // Android push comes with FCM support in the SDK; nothing to do yet.
     Function("registerPushToken") { _: String -> }
 

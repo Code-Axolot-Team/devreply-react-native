@@ -41,6 +41,13 @@ struct APIClient: Sendable {
         }
     }
 
+    func deepLinkOpened(token: String) async throws {
+        let _: Empty = try await send("POST", "v1/deep_link_opened", token: token)
+    }
+
+    /// For responses without a body (204).
+    struct Empty: Decodable {}
+
     func config(token: String) async throws -> MessengerConfig {
         try await send("GET", "v1/messenger/config", token: token)
     }
@@ -88,6 +95,11 @@ struct APIClient: Sendable {
     }
 
     private struct PushResult: Decodable { let push: Bool }
+
+    /// The chat's language changed. Only the locale: the server leaves push alone when no token is sent.
+    func updateLocale(token: String, locale: String) async throws {
+        let _: PushResult = try await send("PATCH", "v1/install", token: token, body: ["locale": locale])
+    }
 
     func profile(token: String) async throws -> Profile {
         try await send("GET", "v1/me", token: token)
@@ -192,6 +204,7 @@ struct APIClient: Sendable {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         switch status {
         case 200..<300:
+            if data.isEmpty, let empty = Empty() as? T { return empty }
             return try Self.decoder.decode(T.self, from: data)
         case 401:
             throw DevReplyError.unauthenticated

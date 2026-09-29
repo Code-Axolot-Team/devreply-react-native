@@ -46,6 +46,15 @@ public class DevReplyModule: Module {
             Task { @MainActor in DevReply.showsUnreadBubble = shows }
         }
 
+        Function("setLocale") { (tag: String?) in
+            Task { @MainActor in DevReply.setLocale(tag) }
+        }
+
+        Function("handle") { (url: String) in
+            guard let link = URL(string: url) else { return }
+            Task { @MainActor in _ = DevReply.handle(link) }
+        }
+
         Function("registerPushToken") { (hex: String) in
             guard let data = Self.data(hex: hex) else { return }
             Task { @MainActor in DevReply.registerPush(data) }

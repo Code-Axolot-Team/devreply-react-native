@@ -10,6 +10,8 @@ declare class DevReplyNativeModule extends NativeModule<DevReplyModuleEvents> {
   getUnreadCount(): number
   setShowsUnreadBubble(shows: boolean): void
   registerPushToken(hexToken: string): void
+  handle(url: string): void
+  setLocale(tag: string | null): void
 }
 
 export default requireNativeModule<DevReplyNativeModule>('DevReply')

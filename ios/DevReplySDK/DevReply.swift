@@ -34,6 +34,21 @@ public enum DevReply {
         Messenger.shared.setAttributes(attributes)
     }
 
+    /// The chat's language, e.g. `"es"`, `"pt-BR"`, `"ja"` (English, Spanish, Portuguese, French, German,
+    /// Italian, Dutch, Polish, Russian, Ukrainian, Turkish, Greek, Japanese, Korean, Chinese). By default
+    /// it follows the device; set it if your app has its own language setting. `nil` = follow the device
+    /// again. Open screens switch at once, and the team sees the user's language in the inbox.
+    ///
+    /// ```swift
+    /// DevReply.setLocale("es")        // or DevReply.setLocale(nil)
+    /// ```
+    public static func setLocale(_ identifier: String?) {
+        L10n.shared.set(identifier)
+    }
+
+    /// What the app set with `setLocale`, or `nil` when the chat follows the device.
+    public static var locale: String? { L10n.shared.override }
+
     /// Colours and look of the messenger. Set before presenting.
     public static var theme: DevReplyTheme {
         get { DevReplyTheme.current }
@@ -79,6 +94,52 @@ public enum DevReply {
         guard let id = PushHandling.conversationID(in: response.notification.request.content.userInfo) else { return false }
         PushHandling.didReceive(conversationID: id)
         return true
+    }
+
+    // MARK: Deep links
+
+    /// Opens the conversation from a DevReply link: the "Reply in the app" button in DevReply's emails
+    /// opens your app's deep link with `?devreply=<conversation id>` (set the link in DevReply → Settings →
+    /// Emails to your users). Pass every URL your app opens; returns `false` for URLs that aren't DevReply's.
+    ///
+    /// SwiftUI:
+    /// ```swift
+    /// WindowGroup { ContentView() }
+    ///     .onOpenURL { url in if !DevReply.handle(url) { /* your own links */ } }
+    /// ```
+    /// UIKit (scene delegate):
+    /// ```swift
+    /// func scene(_ scene: UIScene, openURLContexts contexts: Set<UIOpenURLContext>) {
+    ///     for context in contexts where DevReply.handle(context.url) { return }
+    /// }
+    /// ```
+    /// The messenger opens on that conversation (or its home, if this install doesn't have it), and
+    /// DevReply → Settings shows the deep link as working.
+    @discardableResult
+    public static func handle(_ url: URL) -> Bool {
+        guard let id = conversationID(inDeepLink: url) else { return false }
+        Messenger.shared.reportDeepLinkOpened()
+        openWhenReady(conversationID: id, attempts: 10)
+        return true
+    }
+
+    /// The conversation in a DevReply link (`…?devreply=<uuid>`), if it is one.
+    nonisolated static func conversationID(inDeepLink url: URL) -> UUID? {
+        let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            .first { $0.name == "devreply" }?.value
+        return value.flatMap(UUID.init(uuidString:))
+    }
+
+    /// At a cold start the app's window may not be up yet when the link arrives: wait for it briefly.
+    private static func openWhenReady(conversationID: UUID, attempts: Int) {
+        if topViewController() != nil || attempts <= 0 {
+            open(conversationID: conversationID)
+            return
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            openWhenReady(conversationID: conversationID, attempts: attempts - 1)
+        }
     }
 
     /// Opens the messenger over the current screen. With a category, it goes straight to a new conversation.

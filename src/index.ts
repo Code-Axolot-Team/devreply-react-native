@@ -3,12 +3,23 @@
 //
 //   DevReply.configure({ ios: 'pk_…', android: 'pk_…' })   // once, at startup
 //   DevReply.present()                                     // from any button
-import { Platform } from 'react-native'
+import { Linking, Platform } from 'react-native'
 
 import type { DevReplyAttribute, DevReplyCategory, DevReplyKeys } from './DevReply.types'
 import Native from './DevReplyModule'
 
 export * from './DevReply.types'
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** The conversation a DevReply link points to (`yourapp://devreply?devreply=<id>`), if it is one. */
+function conversationIn(url: string): string | null {
+  const m = /[?&]devreply=([^&#]+)/.exec(url)
+  const id = m ? decodeURIComponent(m[1]) : null
+  return id && UUID.test(id) ? id : null
+}
+
+let listening = false
 
 const DevReply = {
   /** Once, at startup, with the app's public keys (one per platform). Never a secret key (sk_…). */
@@ -19,11 +30,36 @@ const DevReply = {
       return
     }
     Native.configure(key)
+    // The button in DevReply's emails opens the app with a DevReply link: open that conversation.
+    if (!listening) {
+      listening = true
+      void Linking.getInitialURL().then((url) => url && DevReply.handle(url))
+      Linking.addEventListener('url', ({ url }) => DevReply.handle(url))
+    }
+  },
+
+  /**
+   * Opens the conversation a DevReply link points to (`yourapp://devreply?devreply=<id>`, from the
+   * button in DevReply's emails). `configure` already listens for links; call this only if your router
+   * swallows them first. Returns false for any other URL.
+   */
+  handle(url: string): boolean {
+    if (!conversationIn(url)) return false
+    Native.handle(url)
+    return true
   },
 
   /** Opens the chat over the current screen. With a category, straight into a new conversation. */
   present(category?: DevReplyCategory): void {
     Native.present(category ?? null)
+  },
+
+  /**
+   * The chat's language: `es`, `pt-BR`, `ja`… (15 languages; others fall back to English), or null to
+   * follow the device. Takes effect at once, even with the chat open.
+   */
+  setLocale(tag: string | null): void {
+    Native.setLocale(tag)
   },
 
   /** Who the user is, if the app knows. With a name set, the chat doesn't ask for one. */

@@ -52,6 +52,19 @@ const sub = DevReply.addUnreadListener((count) => setBadge(count))   // sub.remo
 DevReply.showsUnreadBubble = false   // if you show the count yourself
 ```
 
+**Languages:** the chat follows the device's language (15 languages); `DevReply.setLocale('es')` if your app has its
+own language setting (`null` follows the device).
+
+**Who replied:** each reply shows the teammate's name, title and photo (their persona in the dashboard), and the
+chat's header shows your app icon. Nothing to set up in the app.
+
+**Replies from email:** DevReply emails users replies they haven't read, with a "Reply in the app" button that opens
+`yourapp://devreply?devreply=<conversation>`. Give the app a URL scheme (Expo: `"scheme": "yourapp"` in `app.json`)
+and set `yourapp://devreply` as the deep link in the dashboard (the app → Settings). The package listens for these
+links itself after `configure`; with expo-router add `app/+native-intent.tsx`:
+`export function redirectSystemPath({ path }) { return path.includes('devreply=') ? '/' : path }`. If your router
+swallows links first, pass them on with `DevReply.handle(url)`.
+
 **Push (iOS):** pass the APNs device token as hex, e.g. from expo-notifications:
 `DevReply.registerPushToken((await Notifications.getDevicePushTokenAsync()).data)`, and upload your APNs key in
 the dashboard. Android push comes later.

@@ -16,7 +16,7 @@ struct Staged: Identifiable, Equatable {
     static let maxPhotoSide: CGFloat = 2048
     static let maxFileBytes = 10 * 1024 * 1024
 
-    var name: String { attachment.filename ?? "Photo" }
+    var name: String { attachment.filename ?? t("photo") }
 
     static func photo(_ data: Data) -> Staged? {
         guard let image = UIImage(data: data) else { return nil }
@@ -139,10 +139,10 @@ final class ConversationModel {
             pending.removeAll { $0.id == item.id }
         } catch {
             let reason = switch error as? DevReplyError {
-            case .unavailable: "Attachments can't be sent right now. Tap to retry."
-            case .network: "You're offline. Tap to retry."
-            case .invalid(let message): "Not sent: \(message). Tap to retry."
-            default: "Not sent. Tap to retry."
+            case .unavailable: t("failed.attachments")
+            case .network: t("failed.offline")
+            case .invalid(let message): t("failed.reason", ["reason": message])
+            default: t("failed.generic")
             }
             if let index = pending.firstIndex(where: { $0.id == item.id }) { pending[index].failure = reason }
         }
@@ -245,13 +245,13 @@ struct ConversationView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 HStack(spacing: 10) {
-                    TeamAvatar(name: config.teamName, size: 32)
+                    TeamAvatar(name: config.teamName, size: 32, imageURL: config.appIconUrl)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(config.teamName.isEmpty ? "Chat" : config.teamName)
+                        Text(config.teamName.isEmpty ? t("chat") : config.teamName)
                             .font(.display(16, relativeTo: .headline))
                             .foregroundStyle(theme.ink)
                         if !config.replyTime.isEmpty {
-                            Text(config.replyTime)
+                            Text(config.replyTimeText)
                                 .font(.text(11, .medium, relativeTo: .caption2))
                                 .foregroundStyle(theme.ink.opacity(0.75))
                         }
@@ -293,9 +293,12 @@ struct ConversationView: View {
         case pending(ConversationModel.Pending)
         /// Under the user's first message: we got it, please allow up to <reply time>.
         case notice
+        /// Who replied, above the first team bubble of each group (spec 05, 0.4).
+        case persona(Persona, id: String)
 
         var id: String {
             switch self {
+            case .persona(_, let id): "persona-\(id)"
             case .time(_, let id): "time-\(id)"
             case .notice: "notice"
             case .message(let m): m.id.uuidString
@@ -308,7 +311,11 @@ struct ConversationView: View {
         var out: [ChatItem] = []
         let firstFromUser = model.messages.firstIndex(where: \.isFromUser)
         for (index, message) in model.messages.enumerated() {
-            if showsTime(at: index) { out.append(.time(message.createdAt, id: message.id.uuidString)) }
+            let time = showsTime(at: index)
+            if time { out.append(.time(message.createdAt, id: message.id.uuidString)) }
+            if let persona = Self.startsPersonaGroup(model.messages, at: index, afterTimeLabel: time) {
+                out.append(.persona(persona, id: message.id.uuidString))
+            }
             out.append(.message(message))
             if index == firstFromUser { out.append(.notice) }
         }
@@ -316,8 +323,21 @@ struct ConversationView: View {
         return out
     }
 
+    /// The persona to label above this message: a team message with a persona that starts a group (after
+    /// the user's message, a time label, or a different persona). `nil` = no label.
+    static func startsPersonaGroup(_ messages: [Message], at index: Int, afterTimeLabel: Bool) -> Persona? {
+        let message = messages[index]
+        guard !message.isFromUser, message.author != .system, let persona = message.persona else { return nil }
+        guard index > 0, !afterTimeLabel else { return persona }
+        let previous = messages[index - 1]
+        if previous.isFromUser || previous.author == .system || previous.persona?.name != persona.name { return persona }
+        return nil
+    }
+
     @ViewBuilder private func row(_ item: ChatItem) -> some View {
         switch item {
+        case .persona(let persona, _):
+            PersonaLabel(persona: persona)
         case .time(let date, _):
             TimeLabel(date: date)
         case .message(let message):
@@ -326,7 +346,7 @@ struct ConversationView: View {
             PendingView(item: pending, teamName: config.teamName)
                 .onTapGesture { if pending.failure != nil { model.retry(pending) } }
         case .notice:
-            ReceivedNotice(teamName: config.teamName, within: config.replyWithin, email: hasEmail ? messenger.profile?.email : nil)
+            ReceivedNotice(teamName: config.teamName, allowText: config.replyAllowText, email: hasEmail ? messenger.profile?.email : nil)
         }
     }
 
@@ -335,7 +355,7 @@ struct ConversationView: View {
     /// Shown while the conversation is empty, at the top of the screen.
     private var intro: some View {
         let category = model.category ?? .other
-        let title = config.startButtons.first { $0.category == category }?.title ?? category.defaultTitle
+        let title = config.startButtons.first { $0.category == category }.map { config.title(for: $0) } ?? category.defaultTitle
         return VStack(spacing: 16) {
             category.icon
                 .resizable()
@@ -378,8 +398,8 @@ struct ConversationView: View {
             }
             HStack(alignment: .bottom, spacing: 10) {
                 Menu {
-                    Button { showPhotos = true } label: { Label("Photo", systemImage: "photo") }
-                    Button { showFiles = true } label: { Label("File", systemImage: "doc") }
+                    Button { showPhotos = true } label: { Label(t("photo"), systemImage: "photo") }
+                    Button { showFiles = true } label: { Label(t("file"), systemImage: "doc") }
                 } label: {
                     Image(systemName: "paperclip")
                         .font(.system(size: 19, weight: .heavy))
@@ -387,10 +407,10 @@ struct ConversationView: View {
                         .frame(width: 46, height: 46)
                         .brutal(fill: .white, shadow: 3)
                 }
-                .accessibilityLabel("Attach a photo or file")
+                .accessibilityLabel(t("attach"))
                 .accessibilityIdentifier("devreply.attach")
 
-                TextField("Message…", text: $draft, axis: .vertical)
+                TextField(t("composer.label"), text: $draft, prompt: Text(t("composer.placeholder")), axis: .vertical)
                     .font(.text(17))
                     .foregroundStyle(theme.ink)
                     .lineLimit(1...5)
@@ -417,7 +437,7 @@ struct ConversationView: View {
                 .buttonStyle(BrutalPressStyle(fill: theme.accent, shadow: 3))
                 .disabled(!canSend)
                 .opacity(canSend ? 1 : 0.45)
-                .accessibilityLabel("Send")
+                .accessibilityLabel(t("send"))
                 .accessibilityIdentifier("devreply.send")
             }
         }
@@ -448,13 +468,13 @@ struct ConversationView: View {
         for url in urls {
             switch Staged.file(at: url) {
             case .success(let item): staged.append(item)
-            case .failure(.tooBig(let name)): pickError = "\(name) is over 10 MB."
-            case .failure(.unreadable): pickError = "Couldn't read that file."
+            case .failure(.tooBig(let name)): pickError = t("too_big", ["name": name])
+            case .failure(.unreadable): pickError = t("unreadable_file")
             }
         }
         if staged.count > 4 {
             staged = Array(staged.prefix(4))
-            pickError = "Up to 4 attachments per message."
+            pickError = t("too_many")
         }
     }
 
@@ -485,17 +505,17 @@ private struct NameForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Kicker(text: "Before we start", inverted: true)
-            Text("So the developer knows who they're talking to. Add your email to get the reply there too.")
+            Kicker(text: t("name.kicker"), inverted: true)
+            Text(t("name.text"))
                 .font(.text(15, .medium))
                 .foregroundStyle(Brand.ink)
-            input("Your name", text: $name, field: .name)
+            input(t("name.placeholder"), text: $name, field: .name)
                 .textContentType(.name)
                 .textInputAutocapitalization(.words)
                 .submitLabel(.next)
                 .onSubmit { field = .email }
                 .accessibilityIdentifier("devreply.profile.name")
-            input("Email (optional)", text: $email, field: .email)
+            input(t("email.optional"), text: $email, field: .email)
                 .textContentType(.emailAddress)
                 .keyboardType(.emailAddress)
                 .textInputAutocapitalization(.never)
@@ -507,7 +527,7 @@ private struct NameForm: View {
                 Text(error).font(.text(13, .bold)).foregroundStyle(Color(red: 0.7, green: 0.15, blue: 0.12))
             }
             Button(action: save) {
-                Text(saving ? "Saving…" : "Start chatting")
+                Text(saving ? t("saving") : t("name.start"))
                     .font(.text(16, .bold))
                     .foregroundStyle(Brand.ink)
                     .frame(maxWidth: .infinity)
@@ -549,7 +569,7 @@ private struct NameForm: View {
             } catch DevReplyError.invalid(let message) {
                 error = message.prefix(1).uppercased() + message.dropFirst() + "."
             } catch {
-                self.error = "Couldn't save. Check your connection and try again."
+                self.error = t("error.save")
             }
             saving = false
         }
@@ -558,12 +578,38 @@ private struct NameForm: View {
 
 // MARK: - Messages
 
+/// Who replied: a small square face and the name (title in grey), lined up with the team's bubbles.
+private struct PersonaLabel: View {
+    let persona: Persona
+
+    var body: some View {
+        HStack(spacing: 7) {
+            PersonaFace(persona: persona, size: 22)
+            Text(persona.name)
+                .font(.text(13, .bold, relativeTo: .footnote))
+                .foregroundStyle(Brand.ink)
+            if !persona.title.isEmpty {
+                Text(persona.title)
+                    .font(.text(13, .medium, relativeTo: .footnote))
+                    .foregroundStyle(Brand.muted)
+            }
+        }
+        .lineLimit(1)
+        .padding(.top, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("devreply.persona")
+    }
+}
+
 /// "MON · 18:52", like the timestamps on devreply.com.
 private struct TimeLabel: View {
     let date: Date
 
     var body: some View {
-        Kicker(text: date.formatted(.dateTime.weekday(.abbreviated)) + " · " + date.formatted(date: .omitted, time: .shortened))
+        let locale = L10n.shared.locale
+        Kicker(text: date.formatted(.dateTime.weekday(.abbreviated).locale(locale)) + " · "
+            + date.formatted(.dateTime.hour().minute().locale(locale)))
             .frame(maxWidth: .infinity)
             .padding(.top, 12)
     }
@@ -595,7 +641,7 @@ private struct MessageView: View {
     }
 
     private var bubbles: some View {
-        Row(fromUser: message.isFromUser, teamName: teamName) {
+        Row(fromUser: message.isFromUser, teamName: teamName, showsAvatar: message.persona == nil) {
             ForEach(Array(message.blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .text(let text):
@@ -604,13 +650,15 @@ private struct MessageView: View {
                     RemoteImage(url: url, width: width, height: height)
                         .onTapGesture { onOpenImage(ViewedImage(url: url)) }
                         .accessibilityAddTraits(.isButton)
-                        .accessibilityLabel("Photo")
+                        .accessibilityLabel(t("photo"))
                 case .file(let url, let name, let size, _):
                     Button { onOpenFile(RemoteFile(url: url, name: name)) } label: {
                         FileChip(name: name, size: size)
                     }
                     .buttonStyle(BrutalPressStyle(shadow: 3))
-                    .accessibilityLabel("File \(name)")
+                    .accessibilityLabel(t("file_named", ["name": name]))
+                case .localized:
+                    TextBubble(text: block.plainText, fromUser: message.isFromUser)
                 case .unsupported(let fallback):
                     TextBubble(text: fallback, fromUser: message.isFromUser, muted: true)
                 }
@@ -646,21 +694,23 @@ private struct PendingView: View {
                     .foregroundStyle(Color(red: 0.7, green: 0.15, blue: 0.12))
                     .multilineTextAlignment(.trailing)
             } else {
-                Kicker(text: item.attachments.isEmpty ? "Sending…" : "Uploading…")
+                Kicker(text: item.attachments.isEmpty ? t("sending") : t("uploading"))
             }
         }
     }
 }
 
-/// Lays out one message: the user's on the right, the team's on the left with the avatar.
+/// Lays out one message: the user's on the right, the team's on the left with the avatar. A team message
+/// with a persona has no avatar here: the persona label above its group says who it is (spec 05, 0.4).
 private struct Row<Content: View>: View {
     let fromUser: Bool
     let teamName: String
+    var showsAvatar = true
     @ViewBuilder let content: Content
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            if fromUser { Spacer(minLength: 48) } else { TeamAvatar(name: teamName, size: 30, fill: Brand.lemon) }
+            if fromUser { Spacer(minLength: 48) } else if showsAvatar { TeamAvatar(name: teamName, size: 30, fill: Brand.lemon) }
             VStack(alignment: fromUser ? .trailing : .leading, spacing: 6) { content }
             if !fromUser { Spacer(minLength: 48) }
         }
@@ -761,7 +811,7 @@ private struct StagedThumb: View {
                     .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2))
             }
             .offset(x: 7, y: -7)
-            .accessibilityLabel("Remove \(item.name)")
+            .accessibilityLabel(t("remove_attachment", ["name": item.name]))
         }
     }
 }
@@ -850,11 +900,11 @@ private struct ImageViewer: View {
                         withAnimation(.snappy) { zoom = 1 }
                     })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .accessibilityLabel("Photo")
+                    .accessibilityLabel(t("photo"))
             } else {
                 ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            IconButton(systemName: "xmark", label: "Close", fill: Brand.lemon) { dismiss() }
+            IconButton(systemName: "xmark", label: t("close_photo"), fill: Brand.lemon) { dismiss() }
                 .padding(20)
         }
         .task { loaded = await ImageCache.shared.image(for: image.url) }
@@ -888,18 +938,18 @@ private extension View {
 /// long a reply usually takes (the app's own reply time, from the dashboard). Never promises who answers.
 private struct ReceivedNotice: View {
     let teamName: String
-    let within: String
+    /// "Please allow up to 3 working days for a reply.", in the user's language.
+    let allowText: String
     let email: String?
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            TeamAvatar(name: teamName, size: 36)
+            TeamAvatar(name: teamName, size: 36, imageURL: Messenger.shared.config.appIconUrl)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Thanks, we got it!")
+                Text(t("notice.title"))
                     .font(.text(15, .bold))
                     .foregroundStyle(Brand.ink)
-                Text("Please allow up to \(within) for a reply. " + (email.map { "We'll also email you at \($0)." }
-                    ?? "You'll see it right here."))
+                Text(allowText + " " + (email.map { t("notice.email", ["email": $0]) } ?? t("notice.here")))
                     .font(.text(14, .medium))
                     .foregroundStyle(Brand.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -926,22 +976,22 @@ private struct EmailAskCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Get the reply by email too?")
+                Text(t("email_ask.title"))
                     .font(.text(15, .bold))
                     .foregroundStyle(Brand.ink)
                 Spacer()
-                Button("No thanks", action: onDone)
+                Button(t("no_thanks"), action: onDone)
                     .font(.text(14, .bold))
                     .foregroundStyle(Brand.muted)
                     .accessibilityIdentifier("devreply.emailask.skip")
             }
-            Text("Optional. Only about this conversation, and you can unsubscribe any time.")
+            Text(t("email_ask.text"))
                 .font(.text(13, .medium))
                 .foregroundStyle(Brand.ink)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 // Verbatim: as a string key, SwiftUI would render the address as a blue link.
-                TextField("Email", text: $email, prompt: Text(verbatim: "you@example.com"))
+                TextField(t("email_ask.placeholder"), text: $email, prompt: Text(verbatim: "you@example.com"))
                     .font(.text(17))
                     .foregroundStyle(Brand.ink)
                     .tint(Brand.ink)
@@ -958,7 +1008,7 @@ private struct EmailAskCard: View {
                     .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2.5))
                     .accessibilityIdentifier("devreply.emailask.field")
                 Button(action: save) {
-                    Text(saving ? "…" : "Save")
+                    Text(saving ? "…" : t("save"))
                         .font(.text(15, .bold))
                         .foregroundStyle(Brand.ink)
                         .padding(.horizontal, 16)
@@ -991,7 +1041,7 @@ private struct EmailAskCard: View {
             } catch DevReplyError.invalid(let message) {
                 error = message.prefix(1).uppercased() + message.dropFirst() + "."
             } catch {
-                self.error = "Couldn't save. Check your connection and try again."
+                self.error = t("error.save")
             }
             saving = false
         }
@@ -1008,7 +1058,7 @@ private struct PushAskCard: View {
     @State private var asking = false
 
     var body: some View {
-        let who = teamName.isEmpty ? "the developer" : teamName
+        let who = teamName.isEmpty ? t("team") : teamName
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: state == .firstAsk ? "bell.badge.fill" : "bell.slash.fill")
                 .font(.system(size: 18, weight: .bold))
@@ -1018,12 +1068,10 @@ private struct PushAskCard: View {
                 .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 8) {
-                Text(state == .firstAsk ? "Don't miss the reply" : "Notifications are off")
+                Text(state == .firstAsk ? t("push.title") : t("push.off_title"))
                     .font(.text(15, .bold))
                     .foregroundStyle(Brand.ink)
-                Text(state == .firstAsk
-                    ? "Turn on notifications and you'll know the moment \(who) answers."
-                    : "Turn them on in Settings so you see when \(who) answers.")
+                Text(state == .firstAsk ? t("push.text", ["team": who]) : t("push.off_text", ["team": who]))
                     .font(.text(14, .medium))
                     .foregroundStyle(Brand.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1039,7 +1087,7 @@ private struct PushAskCard: View {
                             PushManager.shared.openSettings()
                         }
                     } label: {
-                        Text(state == .firstAsk ? (asking ? "…" : "Turn on") : "Open Settings")
+                        Text(state == .firstAsk ? (asking ? "…" : t("push.turn_on")) : t("push.open_settings"))
                             .font(.text(15, .bold))
                             .foregroundStyle(Brand.ink)
                             .padding(.horizontal, 16)
@@ -1047,7 +1095,7 @@ private struct PushAskCard: View {
                     }
                     .buttonStyle(BrutalPressStyle(fill: Brand.pink, shadow: 3))
                     .accessibilityIdentifier("devreply.push.enable")
-                    Button("Not now") { withAnimation { PushManager.shared.notNow() } }
+                    Button(t("push.not_now")) { withAnimation { PushManager.shared.notNow() } }
                         .font(.text(14, .bold))
                         .foregroundStyle(Brand.muted)
                         .frame(height: 40)

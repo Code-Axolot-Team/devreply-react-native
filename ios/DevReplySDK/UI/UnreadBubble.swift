@@ -180,7 +180,7 @@ private struct BubbleView: View {
         )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
-        .accessibilityHint("Opens the chat")
+        .accessibilityHint(t("bubble.open"))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onTap() }
         .accessibilityIdentifier("devreply.bubble")
@@ -203,8 +203,8 @@ private struct BubbleView: View {
     }
 
     private var label: String {
-        let who = model.teamName.isEmpty ? "the team" : model.teamName
-        return model.count == 1 ? "New reply from \(who)" : "\(model.count) new replies from \(who)"
+        let who = model.teamName.isEmpty ? t("team") : model.teamName
+        return model.count == 1 ? t("launcher.one", ["team": who]) : t("launcher.many", ["team": who, "count": "\(model.count)"])
     }
 }
 

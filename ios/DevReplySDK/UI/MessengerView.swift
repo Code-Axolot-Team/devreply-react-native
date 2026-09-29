@@ -46,6 +46,8 @@ struct MessengerView: View {
         }
         // The brand is a light look; keep text fields and sheets consistent in dark mode too.
         .environment(\.colorScheme, .light)
+        // Dates, relative times and system controls in the chat's language (DevReply.setLocale).
+        .environment(\.locale, L10n.shared.locale)
     }
 }
 
@@ -64,7 +66,7 @@ struct HomeView: View {
                     if let error = messenger.lastError, messenger.conversations.isEmpty {
                         ErrorNote(error: error) { Task { await messenger.refresh() } }
                     }
-                    Text("Powered by DevReply")
+                    Text(t("powered"))
                         .font(.text(12, .medium, relativeTo: .caption))
                         .foregroundStyle(Brand.muted)
                         .frame(maxWidth: .infinity)
@@ -88,31 +90,36 @@ struct HomeView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
-                TeamAvatar(name: messenger.config.teamName, size: 44)
-                Kicker(text: messenger.config.teamName.isEmpty ? "Support" : messenger.config.teamName, inverted: true)
+                TeamAvatar(name: messenger.config.teamName, size: 44, imageURL: messenger.config.appIconUrl)
+                Kicker(text: messenger.config.teamName.isEmpty ? t("team") : messenger.config.teamName, inverted: true)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                IconButton(systemName: "xmark", label: "Close") { dismiss() }
+                IconButton(systemName: "xmark", label: t("close")) { dismiss() }
             }
-            Text(messenger.config.greeting)
+            Text(messenger.config.greetingText)
                 .font(.display(38, relativeTo: .largeTitle))
                 .foregroundStyle(theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(messenger.config.intro)
+            Text(messenger.config.introText)
                 .font(.text(17, .medium))
                 .foregroundStyle(theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
-            if !messenger.config.replyTime.isEmpty {
-                HStack(spacing: 8) {
-                    Rectangle().fill(Brand.online).frame(width: 10, height: 10)
-                        .overlay(Rectangle().strokeBorder(theme.ink, lineWidth: 1.5))
-                    Text(messenger.config.replyTime)
-                        .font(.text(14, .bold, relativeTo: .footnote))
-                        .foregroundStyle(theme.ink)
+            if !messenger.config.replyTime.isEmpty || !messenger.config.team.isEmpty {
+                HStack(spacing: 12) {
+                    if !messenger.config.team.isEmpty { teamFaces }
+                    if !messenger.config.replyTime.isEmpty {
+                        HStack(spacing: 8) {
+                            Rectangle().fill(Brand.online).frame(width: 10, height: 10)
+                                .overlay(Rectangle().strokeBorder(theme.ink, lineWidth: 1.5))
+                            Text(messenger.config.replyTimeText)
+                                .font(.text(14, .bold, relativeTo: .footnote))
+                                .foregroundStyle(theme.ink)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .brutal(fill: .white, shadow: 3, lineWidth: 2.5)
+                    }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .brutal(fill: .white, shadow: 3, lineWidth: 2.5)
             }
         }
         .padding(.horizontal, 20)
@@ -124,15 +131,29 @@ struct HomeView: View {
         .overlay(alignment: .bottom) { Rectangle().fill(theme.ink).frame(height: 3) }
     }
 
+    /// Who answers here: up to three teammates' faces, overlapping.
+    private var teamFaces: some View {
+        let team = messenger.config.team
+        return HStack(spacing: -10) {
+            ForEach(Array(team.enumerated()), id: \.offset) { index, persona in
+                PersonaFace(persona: persona, size: 36)
+                    .zIndex(Double(team.count - index))
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel(t("team") + ": " + team.map(\.name).joined(separator: ", "))
+        .accessibilityIdentifier("devreply.team")
+    }
+
     private var startSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Start a conversation")
+            Text(t("start_title"))
                 .font(.display(22, relativeTo: .title2))
                 .foregroundStyle(theme.ink)
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 14) {
                 ForEach(messenger.config.startButtons) { button in
                     NavigationLink(value: Route.new(button.category)) {
-                        StartTile(button: button)
+                        StartTile(button: button, title: messenger.config.title(for: button))
                     }
                     .buttonStyle(BrutalPressStyle())
                     .accessibilityIdentifier("devreply.start.\(button.category.rawValue)")
@@ -143,7 +164,7 @@ struct HomeView: View {
 
     private var recentSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Your conversations")
+            Text(t("your_conversations"))
                 .font(.display(22, relativeTo: .title2))
                 .foregroundStyle(theme.ink)
             // Open ones first, resolved below.
@@ -159,6 +180,7 @@ struct HomeView: View {
 
 private struct StartTile: View {
     let button: MessengerConfig.StartButton
+    let title: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -167,7 +189,7 @@ private struct StartTile: View {
                 .scaledToFit()
                 .frame(width: 46, height: 46)
                 .accessibilityHidden(true)
-            Text(button.title)
+            Text(title)
                 .font(.text(16, .bold, relativeTo: .subheadline))
                 .foregroundStyle(Brand.ink)
                 .multilineTextAlignment(.leading)
@@ -181,6 +203,12 @@ private struct StartTile: View {
 private struct ConversationRow: View {
     let conversation: Conversation
 
+    /// The last message; the server's resolved line in the chat's language.
+    static func preview(_ text: String?) -> String {
+        guard let text else { return t("photo") }
+        return text == Block.legacyResolvedText ? t("system.resolved") : text
+    }
+
     var body: some View {
         let category = conversation.category ?? .other
         HStack(alignment: .top, spacing: 12) {
@@ -191,9 +219,9 @@ private struct ConversationRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
-                    Kicker(text: conversation.lastAuthor == "user" ? "You" : "Team")
+                    Kicker(text: conversation.lastAuthor == "user" ? t("you") : t("team"))
                     if conversation.status == "closed" {
-                        Text("✓ Resolved")
+                        Text(t("resolved"))
                             .font(.text(11, .bold, relativeTo: .caption2))
                             .foregroundStyle(Brand.ink)
                             .padding(.horizontal, 6)
@@ -202,11 +230,11 @@ private struct ConversationRow: View {
                             .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 1.5))
                     }
                     Spacer()
-                    Text(conversation.lastMessageAt, format: .relative(presentation: .named))
+                    Text(conversation.lastMessageAt.formatted(.relative(presentation: .named).locale(L10n.shared.locale)))
                         .font(.text(12, .medium, relativeTo: .caption))
                         .foregroundStyle(Brand.muted)
                 }
-                Text(conversation.lastText ?? "Photo")
+                Text(Self.preview(conversation.lastText))
                     .font(.text(15, conversation.unread > 0 ? .bold : .regular, relativeTo: .subheadline))
                     .foregroundStyle(Brand.ink)
                     .lineLimit(2)
@@ -219,7 +247,7 @@ private struct ConversationRow: View {
                     .frame(minWidth: 24, minHeight: 24)
                     .background(Brand.pink)
                     .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2))
-                    .accessibilityLabel("\(conversation.unread) unread")
+                    .accessibilityLabel(t("a11y.unread", ["count": "\(conversation.unread)"]))
             }
         }
         .padding(14)
@@ -229,20 +257,61 @@ private struct ConversationRow: View {
 }
 
 /// The team's avatar: initials on a square, ink outline.
+/// The team's avatar: the app icon when the team uploaded one, else initials on a square.
 struct TeamAvatar: View {
     let name: String
     let size: CGFloat
     var fill: Color = .white
+    var imageURL: URL? = nil
 
     var body: some View {
-        let initials = name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined()
-        Text(initials.isEmpty ? "DR" : initials.uppercased())
+        SquareFace(name: name, imageURL: imageURL, size: size, fill: fill, lineWidth: 2.5, fallback: "DR")
+    }
+}
+
+/// A persona's face: their photo, or initials on white, in a square with an ink border (spec 05, 0.4).
+struct PersonaFace: View {
+    let persona: Persona
+    var size: CGFloat = 22
+
+    var body: some View {
+        SquareFace(name: persona.name, imageURL: persona.avatarUrl, size: size, fill: .white, lineWidth: 2, fallback: "?")
+    }
+}
+
+/// A square photo from the API (app icon, persona photo), with initials while it loads or if it fails.
+struct SquareFace: View {
+    let name: String
+    let imageURL: URL?
+    let size: CGFloat
+    let fill: Color
+    let lineWidth: CGFloat
+    let fallback: String
+
+    var body: some View {
+        ZStack {
+            initials
+            if let imageURL {
+                AsyncImage(url: imageURL) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFill()
+                    }
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipped()
+        .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: lineWidth))
+        .accessibilityHidden(true)
+    }
+
+    private var initials: some View {
+        let letters = name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined()
+        return Text(letters.isEmpty ? fallback : letters.uppercased())
             .font(.display(size * 0.4, relativeTo: .body))
             .foregroundStyle(Brand.ink)
             .frame(width: size, height: size)
             .background(fill)
-            .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2.5))
-            .accessibilityHidden(true)
     }
 }
 
@@ -254,7 +323,7 @@ struct ErrorNote: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(message).font(.text(15, .medium)).foregroundStyle(Brand.ink)
             Button(action: retry) {
-                Text("Try again")
+                Text(t("try_again"))
                     .font(.text(15, .bold))
                     .foregroundStyle(Brand.ink)
                     .padding(.horizontal, 16)
@@ -269,9 +338,9 @@ struct ErrorNote: View {
 
     private var message: String {
         switch error {
-        case .network: "You seem to be offline."
-        case .invalidPublicKey: "This app's DevReply key isn't valid."
-        default: "Something went wrong."
+        case .network: t("error.offline")
+        case .invalidPublicKey: t("error.key")
+        default: t("error.generic")
         }
     }
 }

@@ -4,14 +4,14 @@ plugins {
 }
 
 group = 'com.devreply.reactnative'
-version = '0.3.2'
+version = '0.4.0'
 
 android {
   namespace "com.devreply.reactnative"
   defaultConfig {
     minSdkVersion 26
     versionCode 1
-    versionName "0.3.2"
+    versionName "0.4.0"
   }
   lintOptions {
     abortOnError false
@@ -26,6 +26,6 @@ repositories {
 
 dependencies {
   // The native DevReply Android SDK (Kotlin, Jetpack Compose), from GitHub through JitPack.
-  implementation 'com.github.Code-Axolot-Team:devreply-android:0.3.2'
+  implementation 'com.github.Code-Axolot-Team:devreply-android:0.4.0'
   implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
 }

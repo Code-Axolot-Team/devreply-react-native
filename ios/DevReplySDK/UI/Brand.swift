@@ -88,25 +88,9 @@ extension Font {
 extension DevReplyCategory {
     var icon: Image { Image("devreply-\(rawValue)", bundle: .devReply) }
 
-    var defaultTitle: String {
-        switch self {
-        case .bug: "Something's broken"
-        case .billing: "Billing or subscription"
-        case .idea: "I have an idea"
-        case .question: "Question"
-        case .other: "Message"
-        }
-    }
+    var defaultTitle: String { t("category.\(rawValue)") }
 
-    var prompt: String {
-        switch self {
-        case .bug: "What happened, and what did you expect instead? A screenshot helps a lot."
-        case .billing: "Tell us what's wrong with your purchase or subscription."
-        case .idea: "What would make the app better for you?"
-        case .question: "What would you like to know?"
-        case .other: "How can we help?"
-        }
-    }
+    var prompt: String { t("prompt.\(rawValue)") }
 }
 
 // MARK: - The brutal look: ink outline + hard offset shadow

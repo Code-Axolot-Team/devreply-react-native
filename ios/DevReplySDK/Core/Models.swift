@@ -1,7 +1,7 @@
 import Foundation
 
 /// Version of this SDK. Sent on install registration and compared with each block's `min_sdk`.
-public let devReplySDKVersion = "0.3.2"
+public let devReplySDKVersion = "0.4.0"
 
 /// What a conversation is about. Set by the start button the user picked (spec 05).
 public enum DevReplyCategory: String, Codable, Sendable, CaseIterable {
@@ -38,6 +38,40 @@ struct Lossy<Element: Decodable & Sendable>: Decodable, Sendable {
     private struct Skip: Decodable {}
 }
 
+/// Who replied, as users see it (spec 05, 0.4): a teammate's or a shared persona.
+struct Persona: Codable, Sendable, Equatable, Hashable {
+    let name: String
+    let title: String
+    let avatarUrl: URL?
+
+    private enum Keys: String, CodingKey { case name, title, avatarUrl }
+
+    init(name: String, title: String = "", avatarUrl: URL? = nil) {
+        self.name = name
+        self.title = title
+        self.avatarUrl = avatarUrl
+    }
+
+    /// Only the name is needed; a blank one makes the persona absent.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        let name = ((try? c.decodeIfPresent(String.self, forKey: .name)) ?? nil)?.trimmingCharacters(in: .whitespaces) ?? ""
+        guard !name.isEmpty else {
+            throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "persona without a name"))
+        }
+        self.name = name
+        title = ((try? c.decodeIfPresent(String.self, forKey: .title)) ?? nil) ?? ""
+        avatarUrl = ((try? c.decodeIfPresent(String.self, forKey: .avatarUrl)) ?? nil).flatMap(URL.init(string:))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(name, forKey: .name)
+        try c.encode(title, forKey: .title)
+        try c.encodeIfPresent(avatarUrl?.absoluteString, forKey: .avatarUrl)
+    }
+}
+
 struct MessengerConfig: Codable, Sendable, Equatable {
     struct StartButton: Codable, Sendable, Equatable, Identifiable {
         let category: DevReplyCategory
@@ -54,9 +88,20 @@ struct MessengerConfig: Codable, Sendable, Equatable {
     /// What goes after "Please allow up to": "3 working days", "an hour". Set per app in the dashboard.
     let replyWithin: String
     let startButtons: [StartButton]
+    /// The app's icon (Settings → General). Shown in the header; initials when missing.
+    let appIconUrl: URL?
+    /// Teammates with photos, most recent repliers first (up to 3): the faces on the home screen.
+    let team: [Persona]
+    /// Texts that are still DevReply's defaults (`greeting`, `intro`, `start_buttons`, …): shown in the
+    /// chat's language. Anything the team wrote is shown as written.
+    /// `nil` when the server doesn't send the list (before it had it): then texts equal to DevReply's
+    /// English defaults count as defaults.
+    let localize: [String]?
+    /// The reply time as a key (`3_working_days`): the chat says it in the user's language.
+    let replyWithinKey: String?
 
     private enum Keys: String, CodingKey {
-        case appName, teamName, greeting, intro, replyTime, replyWithin, startButtons
+        case appName, teamName, greeting, intro, replyTime, replyWithin, startButtons, appIconUrl, team, localize, replyWithinKey
     }
 
     func encode(to encoder: Encoder) throws {
@@ -68,11 +113,16 @@ struct MessengerConfig: Codable, Sendable, Equatable {
         try c.encode(replyTime, forKey: .replyTime)
         try c.encode(replyWithin, forKey: .replyWithin)
         try c.encode(startButtons, forKey: .startButtons)
+        try c.encodeIfPresent(appIconUrl?.absoluteString, forKey: .appIconUrl)
+        try c.encode(team, forKey: .team)
+        try c.encodeIfPresent(localize, forKey: .localize)
+        try c.encodeIfPresent(replyWithinKey, forKey: .replyWithinKey)
     }
 
     init(
         appName: String, teamName: String, greeting: String, intro: String, replyTime: String, replyWithin: String,
-        startButtons: [StartButton]
+        startButtons: [StartButton], appIconUrl: URL? = nil, team: [Persona] = [],
+        localize: [String]? = nil, replyWithinKey: String? = nil
     ) {
         self.appName = appName
         self.teamName = teamName
@@ -81,6 +131,10 @@ struct MessengerConfig: Codable, Sendable, Equatable {
         self.replyTime = replyTime
         self.replyWithin = replyWithin
         self.startButtons = startButtons
+        self.appIconUrl = appIconUrl
+        self.team = team
+        self.localize = localize
+        self.replyWithinKey = replyWithinKey
     }
 
     /// Every field is optional on the wire; missing ones fall back to the placeholder.
@@ -95,6 +149,47 @@ struct MessengerConfig: Codable, Sendable, Equatable {
         replyTime = string(.replyTime) ?? d.replyTime
         replyWithin = string(.replyWithin) ?? d.replyWithin
         startButtons = ((try? c.decodeIfPresent(Lossy<StartButton>.self, forKey: .startButtons)) ?? nil)?.items ?? d.startButtons
+        appIconUrl = string(.appIconUrl).flatMap(URL.init(string:))
+        team = Array((((try? c.decodeIfPresent(Lossy<Persona>.self, forKey: .team)) ?? nil)?.items ?? []).prefix(3))
+        localize = ((try? c.decodeIfPresent(Lossy<String>.self, forKey: .localize)) ?? nil)?.items
+        replyWithinKey = string(.replyWithinKey) ?? Self.presetKey(forEnglish: replyWithin)
+    }
+
+    /// The preset behind an English reply time ("3 working days" → `3_working_days`), for servers that
+    /// send only the English words.
+    static func presetKey(forEnglish text: String) -> String? {
+        let presets = ["an hour": "hour", "a few hours": "hours", "a day": "day", "2 days": "2_days",
+                       "3 working days": "3_working_days", "a week": "week"]
+        return presets[text.trimmingCharacters(in: .whitespaces).lowercased()]
+    }
+
+    /// Whether `field` is still DevReply's default (then it's shown in the user's language).
+    private func isDefault(_ field: String, _ value: String, englishKey: String) -> Bool {
+        if let localize { return localize.contains(field) }
+        return value == DevReplyStrings.table("en")[englishKey]
+    }
+
+    // What the chat shows: DevReply's defaults in the user's language, the team's own texts as written.
+
+    var greetingText: String { isDefault("greeting", greeting, englishKey: "greeting") ? t("greeting") : greeting }
+    var introText: String { isDefault("intro", intro, englishKey: "intro") ? t("intro") : intro }
+
+    func title(for button: StartButton) -> String {
+        if button.title.isEmpty { return button.category.defaultTitle }
+        return isDefault("start_buttons", button.title, englishKey: "category.\(button.category.rawValue)")
+            ? button.category.defaultTitle : button.title
+    }
+
+    /// "Usually replies within 3 working days", in the user's language.
+    var replyTimeText: String {
+        if let key = replyWithinKey, L10n.has("reply_time.\(key)") { return t("reply_time.\(key)") }
+        return replyTime
+    }
+
+    /// "Please allow up to 3 working days for a reply.", in the user's language.
+    var replyAllowText: String {
+        if let key = replyWithinKey, L10n.has("reply_allow.\(key)") { return t("reply_allow.\(key)") }
+        return "Please allow up to \(replyWithin) for a reply."
     }
 
     /// Same as the server's defaults, so the first open looks final before the config arrives
@@ -110,8 +205,11 @@ struct MessengerConfig: Codable, Sendable, Equatable {
             replyTime: "Usually replies within 3 working days",
             replyWithin: "3 working days",
             startButtons: [.bug, .billing, .idea, .question].map {
-                StartButton(category: $0, emoji: "", title: $0.defaultTitle)
-            }
+                StartButton(category: $0, emoji: "", title: "")
+            },
+            // Before the config arrives, everything is DevReply's default: in the user's language.
+            localize: ["greeting", "intro", "start_buttons", "reply_time", "reply_within"],
+            replyWithinKey: "3_working_days"
         )
     }()
 }
@@ -155,9 +253,11 @@ struct Message: Decodable, Sendable, Identifiable, Equatable {
     let author: Author
     let blocks: [Block]
     let createdAt: Date
+    /// Who replied (team messages from SDK 0.4 servers). Missing or malformed = none.
+    let persona: Persona?
 
     private enum Keys: String, CodingKey {
-        case id, author, blocks, createdAt
+        case id, author, blocks, createdAt, persona
     }
 
     init(from decoder: Decoder) throws {
@@ -166,6 +266,7 @@ struct Message: Decodable, Sendable, Identifiable, Equatable {
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         author = (try? c.decode(Author.self, forKey: .author)) ?? .system
         blocks = ((try? c.decodeIfPresent(Lossy<Block>.self, forKey: .blocks)) ?? nil)?.items ?? []
+        persona = (try? c.decodeIfPresent(Persona.self, forKey: .persona)) ?? nil
     }
 
     var isFromUser: Bool { author == .user }
@@ -177,18 +278,23 @@ struct Message: Decodable, Sendable, Identifiable, Equatable {
 /// plain text instead of failing to decode, so old SDKs never break.
 enum Block: Decodable, Sendable, Equatable {
     case text(String)
+    /// A line the server wrote in English that the chat translates (e.g. "✓ Marked as resolved…").
+    case localized(key: String, fallback: String)
     case image(url: URL, width: Int?, height: Int?)
     case file(url: URL, name: String, size: Int?, mime: String?)
     case unsupported(fallback: String)
 
     private enum Keys: String, CodingKey {
-        case type, text, fallback, minSdk, url, width, height, name, size, mime
+        case type, text, fallback, minSdk, url, width, height, name, size, mime, key
     }
+
+    /// The server's resolved line, before it had a key.
+    static let legacyResolvedText = "✓ Marked as resolved. Reply here any time to open it again."
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         let type = (try? c.decode(String.self, forKey: .type)) ?? ""
-        let fallback = (try? c.decode(String.self, forKey: .fallback)) ?? "This message needs a newer version of the app."
+        let fallback = (try? c.decode(String.self, forKey: .fallback)) ?? t("unsupported")
         if let minSdk = try? c.decode(String.self, forKey: .minSdk),
            Self.isVersion(devReplySDKVersion, olderThan: minSdk) {
             self = .unsupported(fallback: fallback)
@@ -196,18 +302,24 @@ enum Block: Decodable, Sendable, Equatable {
         }
         switch type {
         case "text":
-            self = .text((try? c.decode(String.self, forKey: .text)) ?? fallback)
+            let text = (try? c.decode(String.self, forKey: .text)) ?? fallback
+            let key = try? c.decode(String.self, forKey: .key)
+            if key == "resolved" || text == Self.legacyResolvedText {
+                self = .localized(key: "system.resolved", fallback: text)
+            } else {
+                self = .text(text)
+            }
         case "image":
             if let url = try? c.decode(URL.self, forKey: .url) {
                 self = .image(url: url, width: try? c.decode(Int.self, forKey: .width), height: try? c.decode(Int.self, forKey: .height))
             } else {
-                self = .unsupported(fallback: "Photo")
+                self = .unsupported(fallback: t("photo"))
             }
         case "file":
             if let url = try? c.decode(URL.self, forKey: .url) {
                 self = .file(
                     url: url,
-                    name: (try? c.decode(String.self, forKey: .name)) ?? "File",
+                    name: (try? c.decode(String.self, forKey: .name)) ?? t("file"),
                     size: try? c.decode(Int.self, forKey: .size),
                     mime: try? c.decode(String.self, forKey: .mime)
                 )
@@ -222,7 +334,8 @@ enum Block: Decodable, Sendable, Equatable {
     var plainText: String {
         switch self {
         case .text(let s): s
-        case .image: "Photo"
+        case .localized(let key, let fallback): L10n.has(key) ? t(key) : fallback
+        case .image: t("photo")
         case .file(_, let name, _, _): name
         case .unsupported(let fallback): fallback
         }

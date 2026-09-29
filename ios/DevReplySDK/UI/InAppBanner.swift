@@ -75,9 +75,9 @@ private struct BannerView: View {
             if shown {
                 Button(action: onTap) {
                     HStack(alignment: .top, spacing: 12) {
-                        TeamAvatar(name: title, size: 40)
+                        TeamAvatar(name: title, size: 40, imageURL: Messenger.shared.config.appIconUrl)
                         VStack(alignment: .leading, spacing: 3) {
-                            Kicker(text: title.isEmpty ? "New reply" : title, inverted: true)
+                            Kicker(text: title.isEmpty ? t("banner.new_reply") : title, inverted: true)
                             Text(text)
                                 .font(.text(15, .medium))
                                 .foregroundStyle(Brand.ink)
@@ -91,7 +91,7 @@ private struct BannerView: View {
                 }
                 .buttonStyle(BrutalPressStyle(fill: Brand.lemon, shadow: 5))
                 .accessibilityIdentifier("devreply.banner")
-                .accessibilityHint("Opens the conversation")
+                .accessibilityHint(t("banner.opens"))
                 .padding(.horizontal, 12)
                 .offset(y: min(drag, 0))
                 .gesture(DragGesture().onChanged { drag = $0.translation.height }.onEnded { value in

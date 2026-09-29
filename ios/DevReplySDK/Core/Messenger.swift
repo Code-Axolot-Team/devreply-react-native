@@ -23,12 +23,24 @@ final class Messenger {
     var unreadCount: Int { conversations.reduce(0) { $0 + $1.unread } }
 
     private var registering: Task<String, Error>?
+    /// A refused public key (unknown or revoked) isn't retried in a loop: after 1 min, 5 min, 30 min,
+    /// then every 6 h, and again on the next launch (spec 05).
+    private var keyRefusals = 0
+    private var keyRetryAt: Date?
+
+    nonisolated static func keyRetryDelay(afterRefusals count: Int) -> TimeInterval {
+        let steps: [TimeInterval] = [60, 300, 1800]
+        return count < steps.count ? steps[count] : 6 * 3600
+    }
 
     func configure(publicKey: String, apiURL: URL) {
         self.publicKey = publicKey
         client = APIClient(baseURL: apiURL)
         registering = nil
+        keyRefusals = 0
+        keyRetryAt = nil
         conversations = []
+        _ = L10n.shared // the device's language, and its changes, from now on
         config = Self.cachedConfig(for: publicKey) ?? .placeholder
         _ = BrandFont.register
         // Register early so the first open is instant, and pick up unread replies.
@@ -55,11 +67,24 @@ final class Messenger {
         }
         if let stored = Keychain.token(for: account) { return stored }
         if let registering { return try await registering.value }
+        if let at = keyRetryAt, Date() < at { throw DevReplyError.invalidPublicKey }
         let device = DeviceInfo.current
         let task = Task { () throws -> String in
-            let install = try await client.registerInstall(publicKey: publicKey, device: device)
-            Keychain.setToken(install.token, for: account)
-            return install.token
+            do {
+                let install = try await client.registerInstall(publicKey: publicKey, device: device)
+                Keychain.setToken(install.token, for: account)
+                UserDefaults.standard.set(device.json["locale"], forKey: "devreply.locale.\(account)")
+                keyRefusals = 0
+                keyRetryAt = nil
+                return install.token
+            } catch DevReplyError.invalidPublicKey {
+                if keyRefusals == 0 {
+                    print("DevReply: this public key isn't recognised: \(publicKey.prefix(9))… Check the key in DevReply → Settings.")
+                }
+                keyRetryAt = Date().addingTimeInterval(Self.keyRetryDelay(afterRefusals: keyRefusals))
+                keyRefusals += 1
+                throw DevReplyError.invalidPublicKey
+            }
         }
         registering = task
         defer { registering = nil }
@@ -75,6 +100,26 @@ final class Messenger {
             if let account = keychainAccount { Keychain.deleteToken(for: account) }
             return try await call(client, try await token())
         }
+    }
+
+    /// The chat's language changed (the app's `setLocale`, or the device's language): tell the server
+    /// once, so the team sees it. Only after this install is registered; registration sends it too.
+    func syncLocale() {
+        guard client != nil, let account = keychainAccount, Keychain.token(for: account) != nil else { return }
+        let tag = L10n.currentTag
+        let key = "devreply.locale.\(account)"
+        guard UserDefaults.standard.string(forKey: key) != tag else { return }
+        Task {
+            if (try? await authorized({ try await $0.updateLocale(token: $1, locale: tag) })) != nil {
+                UserDefaults.standard.set(tag, forKey: key)
+            }
+        }
+    }
+
+    /// The app opened a DevReply link (`DevReply.handle`): tell the server, so Settings shows the deep link works.
+    func reportDeepLinkOpened() {
+        guard client != nil else { return }
+        Task { _ = try? await authorized { try await $0.deepLinkOpened(token: $1) } }
     }
 
     func refresh() async {
@@ -93,6 +138,7 @@ final class Messenger {
             }
             conversations = l
             lastError = nil
+            syncLocale()
         } catch let error as DevReplyError {
             lastError = error
         } catch {
@@ -175,7 +221,7 @@ final class Messenger {
                 let before = Dictionary(uniqueKeysWithValues: self.conversations.map { ($0.id, $0.unread) })
                 await self.refresh()
                 if let fresh = self.conversations.first(where: { $0.unread > (before[$0.id] ?? 0) && $0.lastAuthor != "user" }) {
-                    InAppBanner.shared.show(title: self.config.teamName, body: fresh.lastText ?? "New reply", conversationID: fresh.id)
+                    InAppBanner.shared.show(title: self.config.teamName, body: fresh.lastText ?? t("banner.new_reply"), conversationID: fresh.id)
                 }
             }
         }

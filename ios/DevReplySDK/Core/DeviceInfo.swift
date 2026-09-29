@@ -25,6 +25,7 @@ struct DeviceInfo: Sendable {
             "os_version": osVersion,
             "app_version": appVersion,
             "sdk_version": devReplySDKVersion,
+            "locale": L10n.currentTag,
         ]
     }
 
