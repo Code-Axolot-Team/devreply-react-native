@@ -53,7 +53,8 @@
     "app.plugin.js",
     "scripts/sync-ios-sdk.mjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"
