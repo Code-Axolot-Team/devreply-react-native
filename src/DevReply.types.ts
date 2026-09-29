@@ -7,6 +7,3 @@ export type DevReplyAttribute = string | number | boolean | null
 /** The app's public keys from the DevReply dashboard (Settings → Platforms). Safe to ship. */
 export type DevReplyKeys = { ios?: string; android?: string }
 
-export type DevReplyModuleEvents = {
-  onUnreadChange: (event: { count: number }) => void
-}

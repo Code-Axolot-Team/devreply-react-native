@@ -8,28 +8,38 @@ No UI in JavaScript, no web view.
 - Photos and files, name first, optional email, "we got it" with your reply time.
 - An unread bubble over your app, and the unread count in JavaScript.
 
-Requires iOS 17 and Android 8 (API 26). Works with Expo (prebuild / development builds) and bare React Native
-with Expo modules. Not in Expo Go (it has native code).
+Requires iOS 17, Android 8 (API 26) and React Native 0.80+ with the New Architecture (the default since 0.76).
+One package for both kinds of app: **bare React Native** (no Expo needed) and **Expo** (prebuild / development
+builds). Not in Expo Go (it has native code).
 
-## Install
+## Install: bare React Native
+
+```sh
+npm install @devreply/react-native
+```
+
+- **iOS:** in `ios/Podfile` set `platform :ios, '17.0'`, and set the app target's Minimum Deployments to 17.0 in
+  Xcode (target → General). Then `cd ios && pod install`.
+- **Android:** in `android/build.gradle` set `minSdkVersion = 26`. That's all: the package adds the JitPack
+  repository the Android SDK comes from. (If your `settings.gradle` forbids project repositories, add
+  `maven { url 'https://jitpack.io' }` to its `dependencyResolutionManagement.repositories`.)
+- Rebuild the app (`npx react-native run-ios` / `run-android`).
+
+## Install: Expo
 
 ```sh
 npx expo install @devreply/react-native
 ```
 
-Add the config plugin to `app.json` (it sets iOS 17 and Android API 26, and adds JitPack for the Android SDK), then rebuild:
+Add the config plugin to `app.json` (it sets iOS 17 and Android API 26, and adds JitPack), then rebuild:
 
 ```json
 { "expo": { "plugins": ["@devreply/react-native"] } }
 ```
 
 ```sh
-npx expo prebuild && npx expo run:ios   # or run:android
+npx expo prebuild && npx expo run:ios   # or run:android, or a development build with EAS
 ```
-
-Bare React Native: install `expo` modules support (`npx install-expo-modules`), set the iOS deployment target to
-17.0, `minSdkVersion` 26, and add `maven { url 'https://jitpack.io' }` to `allprojects.repositories` in
-`android/build.gradle`.
 
 Using a coding agent? Give it your app's setup guide from the dashboard (Settings → Add DevReply to your app):
 it has your keys and does these steps for you.
@@ -72,17 +82,24 @@ the dashboard. Android push comes later.
 ## How it's built
 
 `ios/` compiles the DevReply iOS SDK sources (`ios/DevReplySDK`, the same code as
-[devreply-ios](https://github.com/Code-Axolot-Team/devreply-ios)) with a thin Expo module. `android/` depends on
-[devreply-android](https://github.com/Code-Axolot-Team/devreply-android) from JitPack. The JavaScript only passes calls through.
+[devreply-ios](https://github.com/Code-Axolot-Team/devreply-ios)) with a TurboModule (`src/NativeDevReply.ts` is the spec; `ios/DevReplyRN.mm` and `ios/DevReplyBridge.swift`
+implement it). `android/` implements it in Kotlin over
+[devreply-android](https://github.com/Code-Axolot-Team/devreply-android) from JitPack. A plain React Native
+module, autolinked by React Native and by Expo alike; `app.plugin.js` is only for Expo. The JavaScript only
+passes calls through.
 
 ## Example and tests
 
 ```sh
-npm install && npm run build
-cd example && echo "EXPO_PUBLIC_DEVREPLY_IOS_KEY=pk_…
+npm install
+cd example && npm install && echo "EXPO_PUBLIC_DEVREPLY_IOS_KEY=pk_…
 EXPO_PUBLIC_DEVREPLY_ANDROID_KEY=pk_…" > .env.local
 npx expo prebuild && npx expo run:ios --configuration Release
-maestro test -e NONCE=123 maestro/chat.yaml   # with a script replying "Founder reply 123" from the dashboard API
+maestro test -e NONCE=123 maestro/chat.yaml   # with a script replying "Founder reply 123" once the chat is closed
+```
+
+The example is an Expo app. For bare React Native, test the packed package (`npm pack`) in a fresh
+`npx @react-native-community/cli init` app with the same `App.tsx` and flow.
 ```
 
 ## License

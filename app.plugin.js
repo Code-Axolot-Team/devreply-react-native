@@ -1,6 +1,10 @@
 // Expo config plugin: DevReply needs iOS 17 and Android 8 (API 26), and the Android SDK comes from
-// JitPack. Add "@devreply/react-native" to "plugins" in app.json, then prebuild.
-const { createRunOncePlugin, withGradleProperties, withPodfileProperties, withProjectBuildGradle, withXcodeProject } = require('expo/config-plugins')
+// JitPack. Add "@devreply/react-native" to "plugins" in app.json, then prebuild. Bare React Native apps
+// don't use this file (see the README).
+// Expo comes from the app (this package doesn't depend on it), so resolve it from the project first.
+const { createRunOncePlugin, withGradleProperties, withPodfileProperties, withProjectBuildGradle, withXcodeProject } = require(
+  require.resolve('expo/config-plugins', { paths: [process.cwd(), __dirname] }),
+)
 
 const pkg = require('./package.json')
 
@@ -10,7 +14,7 @@ function withDevReply(config) {
     if (!(current >= 17)) c.modResults['ios.deploymentTarget'] = '17.0'
     return c
   })
-  // The app target too, not only the pods: the generated modules provider is compiled with the app's target.
+  // The app target too, not only the pods: the app links DevReply's code, built for iOS 17.
   config = withXcodeProject(config, (c) => {
     const configs = c.modResults.pbxXCBuildConfigurationSection()
     for (const key of Object.keys(configs)) {

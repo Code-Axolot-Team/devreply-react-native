@@ -5,8 +5,9 @@ import android.os.Looper
 import androidx.compose.runtime.snapshotFlow
 import com.devreply.sdk.DevReply
 import com.devreply.sdk.DevReplyCategory
-import expo.modules.kotlin.modules.Module
-import expo.modules.kotlin.modules.ModuleDefinition
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReadableMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -15,62 +16,59 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
-// The React Native bridge: every call goes to the native DevReply SDK, on the main thread.
-class DevReplyModule : Module() {
+// The React Native bridge (the TurboModule "DevReply", src/NativeDevReply.ts): every call goes to the
+// native DevReply SDK, on the main thread.
+class DevReplyModule(private val context: ReactApplicationContext) : NativeDevReplySpec(context) {
   private val main = Handler(Looper.getMainLooper())
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
   private var watching: Job? = null
   @Volatile private var unread = 0
 
-  override fun definition() = ModuleDefinition {
-    Name("DevReply")
-    Events("onUnreadChange")
+  /** The current screen if there is one (the unread bubble then shows on it straight away), else the app. */
+  private val screen get() = context.currentActivity ?: context
 
-    Function("configure") { publicKey: String ->
-      main.post {
-        // The current screen if there is one: the unread bubble then shows on it straight away.
-        val context = appContext.currentActivity ?: appContext.reactContext ?: return@post
-        DevReply.configure(context, publicKey)
-        watchUnread()
-      }
+  override fun configure(publicKey: String) {
+    main.post {
+      DevReply.configure(screen, publicKey)
+      watchUnread()
     }
+  }
 
-    Function("present") { category: String? ->
-      main.post {
-        val context = appContext.currentActivity ?: appContext.reactContext ?: return@post
-        DevReply.present(context, DevReplyCategory.entries.firstOrNull { it.name.equals(category, ignoreCase = true) })
-      }
+  override fun present(category: String?) {
+    main.post {
+      DevReply.present(screen, DevReplyCategory.entries.firstOrNull { it.name.equals(category, ignoreCase = true) })
     }
+  }
 
-    Function("setUser") { name: String?, email: String? ->
-      main.post { DevReply.setUser(name, email) }
-    }
+  override fun setUser(name: String?, email: String?) {
+    main.post { DevReply.setUser(name, email) }
+  }
 
-    Function("setAttributes") { attributes: Map<String, Any?> ->
-      main.post { DevReply.setAttributes(attributes) }
-    }
+  override fun setAttributes(attributes: ReadableMap) {
+    val values = attributes.toHashMap()
+    main.post { DevReply.setAttributes(values) }
+  }
 
-    Function("getUnreadCount") { unread }
+  override fun getUnreadCount(): Double = unread.toDouble()
 
-    Function("setShowsUnreadBubble") { shows: Boolean ->
-      main.post { DevReply.showsUnreadBubble = shows }
-    }
+  override fun setShowsUnreadBubble(shows: Boolean) {
+    main.post { DevReply.showsUnreadBubble = shows }
+  }
 
-    Function("setLocale") { tag: String? ->
-      main.post { DevReply.setLocale(tag) }
-    }
+  override fun setLocale(tag: String?) {
+    main.post { DevReply.setLocale(tag) }
+  }
 
-    Function("handle") { url: String ->
-      main.post {
-        val context = appContext.currentActivity ?: appContext.reactContext ?: return@post
-        DevReply.handle(context, android.net.Uri.parse(url))
-      }
-    }
+  override fun handle(url: String) {
+    main.post { DevReply.handle(screen, android.net.Uri.parse(url)) }
+  }
 
-    // Android push comes with FCM support in the SDK; nothing to do yet.
-    Function("registerPushToken") { _: String -> }
+  // Android push comes with FCM support in the SDK; nothing to do yet.
+  override fun registerPushToken(hexToken: String) {}
 
-    OnDestroy { scope.cancel() }
+  override fun invalidate() {
+    scope.cancel()
+    super.invalidate()
   }
 
   /** Sends `onUnreadChange` whenever the count changes (it's Compose state in the SDK). */
@@ -79,8 +77,12 @@ class DevReplyModule : Module() {
     watching = scope.launch {
       snapshotFlow { DevReply.unreadCount }.distinctUntilChanged().collect { count ->
         unread = count
-        sendEvent("onUnreadChange", mapOf("count" to count))
+        emitOnUnreadChange(Arguments.createMap().apply { putInt("count", count) })
       }
     }
+  }
+
+  companion object {
+    const val NAME = NativeDevReplySpec.NAME
   }
 }

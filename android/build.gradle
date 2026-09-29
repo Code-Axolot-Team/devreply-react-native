@@ -1,31 +1,53 @@
-plugins {
-  id 'com.android.library'
-  id 'expo-module-gradle-plugin'
+// The React Native bridge for Android: a TurboModule over the native DevReply SDK (Kotlin, Jetpack
+// Compose), which comes from GitHub through JitPack.
+buildscript {
+  ext.DevReply = [
+    kotlinVersion: "2.0.21",
+    minSdkVersion: 26,
+    compileSdkVersion: 36
+  ]
+  ext.getExtOrDefault = { prop ->
+    rootProject.ext.has(prop) ? rootProject.ext.get(prop) : DevReply[prop]
+  }
+  repositories {
+    google()
+    mavenCentral()
+  }
+  dependencies {
+    classpath "com.android.tools.build:gradle:8.7.2"
+    // noinspection DifferentKotlinGradleVersion
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:${getExtOrDefault('kotlinVersion')}"
+  }
 }
 
-group = 'com.devreply.reactnative'
-version = '0.4.0'
+apply plugin: "com.android.library"
+if (project.extensions.findByName("kotlin") == null) {
+  apply plugin: "kotlin-android"
+}
+apply plugin: "com.facebook.react"
+
+// The app resolves the SDK too: give every project JitPack, so bare apps need no Gradle edit.
+rootProject.allprojects {
+  repositories {
+    maven { url "https://jitpack.io" }
+  }
+}
 
 android {
   namespace "com.devreply.reactnative"
+  compileSdkVersion getExtOrDefault("compileSdkVersion")
   defaultConfig {
-    minSdkVersion 26
-    versionCode 1
-    versionName "0.4.0"
+    // DevReply needs Android 8 (API 26), above React Native's default of 24.
+    minSdkVersion Math.max(26, getExtOrDefault("minSdkVersion") as int)
   }
-  lintOptions {
-    abortOnError false
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
   }
-}
-
-repositories {
-  google()
-  mavenCentral()
-  maven { url 'https://jitpack.io' }
 }
 
 dependencies {
-  // The native DevReply Android SDK (Kotlin, Jetpack Compose), from GitHub through JitPack.
-  implementation 'com.github.Code-Axolot-Team:devreply-android:0.4.0'
-  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+  implementation "com.facebook.react:react-android"
+  implementation "com.github.Code-Axolot-Team:devreply-android:0.4.0"
+  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
 }

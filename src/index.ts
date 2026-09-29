@@ -6,7 +6,7 @@
 import { Linking, Platform } from 'react-native'
 
 import type { DevReplyAttribute, DevReplyCategory, DevReplyKeys } from './DevReply.types'
-import Native from './DevReplyModule'
+import Native from './NativeDevReply'
 
 export * from './DevReply.types'
 
@@ -79,7 +79,7 @@ const DevReply = {
 
   /** Called whenever the unread count changes. Call `.remove()` on the result to stop. */
   addUnreadListener(listener: (count: number) => void): { remove(): void } {
-    return Native.addListener('onUnreadChange', (e) => listener(e.count))
+    return Native.onUnreadChange((e) => listener(e.count))
   },
 
   /**
