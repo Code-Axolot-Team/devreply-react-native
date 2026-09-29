@@ -62,6 +62,38 @@ const sub = DevReply.addUnreadListener((count) => setBadge(count))   // sub.remo
 DevReply.showsUnreadBubble = false   // if you show the count yourself
 ```
 
+**A draft and context:** open a new conversation with text already in the composer (the user sees it and sends
+it; nothing is sent on its own) and context for your team, shown with that conversation only as "Opened with"
+(text, number or true/false, up to 20):
+
+```ts
+DevReply.present('billing', { message: "My purchase didn't go through", attributes: { source: 'paywall', rc_error_code: e.code } })
+```
+
+**Switched off in the dashboard:** `present` returns `false` and shows nothing, and the unread bubble hides.
+`DevReply.isAvailable` tells you up front, to hide your own "Message us" button.
+
+**Events** for your analytics:
+
+```ts
+const events = DevReply.addEventListener((e) => {
+  // e.type: 'messengerOpened' | 'messengerClosed' | 'conversationStarted' (conversationId, category) | 'messageSent' (conversationId)
+  if (e.type === 'conversationStarted') analytics.track('support_started', { category: e.category })
+})
+events.remove()   // when you no longer need them
+```
+
+**Colours and dark mode:** six colours as hex strings, for light and dark: `primary` (header and highlights),
+`accent` (buttons that act), `userBubble`, `userBubbleText`, `background` and `ink` (text). DevReply derives the
+rest and keeps its own line widths, shadows, fonts and icons. Dark mode is off by default (the chat stays light);
+when on, the chat follows the device's appearance. A side you leave out stays as it is.
+
+```ts
+DevReply.setTheme({ light: { primary: '#0A84FF', accent: '#FF9F0A' }, dark: 'default' })   // 'default' = DevReply's "Deep blue"
+DevReply.setTheme({ dark: { primary: '#7A3CFF', background: '#101018', ink: '#F2F2F7' } })  // your own dark colours
+DevReply.setTheme({ dark: null })                                                          // dark off again
+```
+
 **Languages:** the chat follows the device's language (15 languages); `DevReply.setLocale('es')` if your app has its
 own language setting (`null` follows the device).
 
@@ -110,7 +142,8 @@ Notifications.addNotificationResponseReceivedListener((r) => { if (DevReply.hand
 
 `handleNotificationOpened` returns false for your own notifications. The dashboard's push card shows
 "✓ Taps open the chat" once a tap opened a conversation.
-Upload your push keys in the dashboard (the APNs key; the Firebase service account for Android). The chat asks
+Upload your push keys in the dashboard (the APNs key; the Firebase service account for Android), or let your
+coding agent do it with DevReply's MCP tools `set_ios_push_key` and `set_android_push_key`. The chat asks
 for the notification permission only after the user's first message.
 
 ## Sign-in, sign-out and account deletion
@@ -120,7 +153,7 @@ If your app has accounts:
 ```ts
 DevReply.login(user.id)                // after sign-in: your own id for the user, never an email or a secret
 DevReply.logout()                      // on every sign-out and account switch
-const ok = await DevReply.deleteUser() // in your delete-account flow; false if DevReply couldn't be reached
+const ok = await DevReply.deleteUser() // in your delete-account flow; false = queued, retried until done
 ```
 
 - `login` labels the user for your team (the dashboard shows it as "User ID (your app)") and lets your backend
@@ -129,7 +162,9 @@ const ok = await DevReply.deleteUser() // in your delete-account flow; false if 
 - `logout` revokes this install and its push token; the device forgets the chat and the next person starts empty.
   The conversations stay with your team.
 - `deleteUser` deletes the user's name, email, attributes, conversations, messages and files, then logs out.
-  Apple requires account deletion in the app.
+  Apple requires account deletion in the app. It never gives up: if DevReply can't be reached, the device forgets
+  the user at once and returns `false`, and the deletion is retried at the next launches until the server
+  confirms. `true` = deleted now.
 
 Your backend can delete a user too, with a read-and-write secret key (never in an app):
 
@@ -162,7 +197,6 @@ maestro test -e NONCE=123 maestro/chat.yaml   # with a script replying "Founder 
 
 The example is an Expo app. For bare React Native, test the packed package (`npm pack`) in a fresh
 `npx @react-native-community/cli init` app with the same `App.tsx` and flow.
-```
 
 ## License
 

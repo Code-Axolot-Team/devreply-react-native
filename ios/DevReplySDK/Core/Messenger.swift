@@ -22,6 +22,55 @@ final class Messenger {
 
     var unreadCount: Int { conversations.reduce(0) { $0 + $1.unread } }
 
+    /// `DevReply.isAvailable`: configured, and the team hasn't switched the chat off.
+    var isAvailable: Bool { Self.isAvailable(configured: client != nil, config: config) }
+
+    /// Before any config (none cached yet) the chat counts as on: the placeholder is `enabled`.
+    nonisolated static func isAvailable(configured: Bool, config: MessengerConfig) -> Bool {
+        configured && config.enabled
+    }
+
+    // MARK: This presentation (`DevReply.present(category:message:attributes:)`)
+
+    /// Prefills the composer of a new conversation started in this presentation, until one starts.
+    @ObservationIgnored private(set) var presentationMessage: String?
+    /// Goes as `context` with this presentation's first new conversation.
+    @ObservationIgnored private(set) var presentationContext: [String: DevReplyAttribute] = [:]
+    /// A full-screen cover (the photo viewer) is over the messenger: its disappearing isn't a close.
+    @ObservationIgnored var isCovered = false
+
+    func setPresentation(message: String?, attributes: [String: DevReplyAttribute]) {
+        let text = message?.trimmingCharacters(in: .whitespacesAndNewlines)
+        presentationMessage = (text?.isEmpty ?? true) ? nil : message
+        presentationContext = DevReplyAttribute.context(attributes)
+    }
+
+    func messengerAppeared() {
+        guard !isPresented else { return }
+        isPresented = true
+        Events.emit(.messengerOpened)
+    }
+
+    func messengerDisappeared() {
+        guard isPresented, !isCovered else { return }
+        isPresented = false
+        presentationMessage = nil
+        presentationContext = [:]
+        Events.emit(.messengerClosed)
+    }
+
+    /// `POST /v1/conversations` succeeded: the presentation's message and context are used up.
+    func conversationStarted(_ id: UUID, category: DevReplyCategory?) {
+        presentationMessage = nil
+        presentationContext = [:]
+        Events.emit(.conversationStarted(conversationID: id, category: category))
+        Events.emit(.messageSent(conversationID: id))
+    }
+
+    func messageSent(conversationID id: UUID) {
+        Events.emit(.messageSent(conversationID: id))
+    }
+
     private var registering: Task<String, Error>?
     /// A refused public key (unknown or revoked) isn't retried in a loop: after 1 min, 5 min, 30 min,
     /// then every 6 h, and again on the next launch (spec 05).
@@ -70,6 +119,8 @@ final class Messenger {
         _ = L10n.shared // the device's language, and its changes, from now on
         config = Self.cachedConfig(for: publicKey) ?? .placeholder
         _ = BrandFont.register
+        // Deletions the server didn't confirm yet (`deleteUser` offline): with their own old tokens.
+        Task { await retryPendingDeletions() }
         // Register early so the first open is instant, and pick up unread replies.
         PushManager.shared.start()
         UnreadBubble.shared.start()
@@ -166,6 +217,8 @@ final class Messenger {
             let (c, l, p) = try await (config, list, me)
             profile = p
             if c != self.config {
+                // Switched off in the dashboard: an open messenger closes itself (MessengerView), the
+                // unread bubble hides (UnreadBubble).
                 self.config = c
                 Self.cache(c, for: publicKey)
             }
@@ -249,17 +302,61 @@ final class Messenger {
         }
     }
 
-    /// `DevReply.deleteUser()`: deletes the user's data on the server, then forgets the install. False if
-    /// the server couldn't be reached (try again later).
+    /// `DevReply.deleteUser()`: deletes the user's data on the server and forgets the install. If the server
+    /// can't be reached (or answers 5xx/429), the device forgets the user anyway (like `logout`, without
+    /// `POST /v1/logout`) and keeps the old token as a pending deletion, retried at every `configure` and
+    /// return to the foreground until the server confirms. True = deleted on the server now.
     func deleteUser() async -> Bool {
-        guard client != nil else { return false }
-        guard (try? await authorized({ try await $0.deleteUser(token: $1) })) != nil else { return false }
+        guard let client, let account = keychainAccount else { return false }
+        var deleted = true
+        // No install token: this device never registered, so the server has nothing of it to delete.
+        if let token = Keychain.token(for: account) {
+            deleted = await Self.deleteOnServer(token: token, client: client)
+            if !deleted { Keychain.setPendingDeletions(Keychain.pendingDeletions(for: account) + [token], for: account) }
+        }
         forgetInstall()
         Task {
             await refresh()
             await PushManager.shared.sendTokenIfNeeded()
         }
-        return true
+        return deleted
+    }
+
+    /// `DELETE /v1/me` with this token. Done on 2xx, and on 401/404 (already gone); anything else
+    /// (offline, 5xx, 429…) means try again later.
+    nonisolated static func deleteOnServer(token: String, client: APIClient) async -> Bool {
+        do {
+            try await client.deleteUser(token: token)
+            return true
+        } catch DevReplyError.unauthenticated, DevReplyError.notFound {
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Retries each saved deletion with its own saved token (never this install's). Returns the ones
+    /// still owed.
+    nonisolated static func retryDeletions(_ tokens: [String], client: APIClient) async -> [String] {
+        var remaining: [String] = []
+        for token in tokens {
+            if await !deleteOnServer(token: token, client: client) { remaining.append(token) }
+        }
+        return remaining
+    }
+
+    @ObservationIgnored private var retryingDeletions = false
+
+    func retryPendingDeletions() async {
+        guard let client, let account = keychainAccount, !retryingDeletions else { return }
+        let tokens = Keychain.pendingDeletions(for: account)
+        guard !tokens.isEmpty else { return }
+        retryingDeletions = true
+        defer { retryingDeletions = false }
+        let remaining = Set(await Self.retryDeletions(tokens, client: client))
+        let done = Set(tokens).subtracting(remaining)
+        // Deletions queued meanwhile stay.
+        Keychain.setPendingDeletions(Keychain.pendingDeletions(for: account).filter { !done.contains($0) }, for: account)
     }
 
     /// Everything this device knew about the user: the token, who they were, their chats on screen.
@@ -316,7 +413,10 @@ final class Messenger {
             foregroundObserver = NotificationCenter.default.addObserver(
                 forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
             ) { _ in
-                Task { @MainActor in await Messenger.shared.refresh() }
+                Task { @MainActor in
+                    await Messenger.shared.retryPendingDeletions()
+                    await Messenger.shared.refresh()
+                }
             }
         }
         watching = Task { [weak self] in
@@ -324,9 +424,11 @@ final class Messenger {
                 try? await Task.sleep(for: .seconds(30))
                 guard let self, UIApplication.shared.applicationState == .active, !self.isPresented,
                       !self.conversations.isEmpty else { continue }
+                // Switched off in the dashboard: no banners.
+                guard self.isAvailable else { continue }
                 let before = Dictionary(uniqueKeysWithValues: self.conversations.map { ($0.id, $0.unread) })
                 await self.refresh()
-                if let fresh = self.conversations.first(where: { $0.unread > (before[$0.id] ?? 0) && $0.lastAuthor != "user" }) {
+                if self.isAvailable, let fresh = self.conversations.first(where: { $0.unread > (before[$0.id] ?? 0) && $0.lastAuthor != "user" }) {
                     InAppBanner.shared.show(title: self.config.teamName, body: fresh.lastText ?? t("banner.new_reply"), conversationID: fresh.id)
                 }
             }

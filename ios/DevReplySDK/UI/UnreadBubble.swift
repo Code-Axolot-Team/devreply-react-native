@@ -65,7 +65,8 @@ final class UnreadBubble {
         let unread = messenger.unreadCount
         if let dismissedAt, unread > dismissedAt { self.dismissedAt = nil }
         if unread == 0 { dismissedAt = nil }
-        let shows = isEnabled && unread > 0 && !messenger.isPresented && !keyboardUp && dismissedAt == nil
+        let shows = isEnabled && messenger.isAvailable && unread > 0 && !messenger.isPresented && !keyboardUp
+            && dismissedAt == nil
         model.count = unread
         model.teamName = messenger.config.teamName
         if shows { show() } else { hide() }
@@ -79,6 +80,7 @@ final class UnreadBubble {
                 .first(where: { $0.activationState == .foregroundActive }) else { return }
         let window = PassthroughWindow(windowScene: scene)
         window.windowLevel = .normal + 1
+        window.overrideUserInterfaceStyle = PassthroughWindow.appStyle(in: scene)
         window.backgroundColor = .clear
         let host = UIHostingController(rootView: BubbleView(model: model, onTap: open, onMove: move, onDismiss: dismiss))
         host.view.backgroundColor = .clear
@@ -133,6 +135,8 @@ private final class BubbleModel {
 }
 
 private struct BubbleView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private var line: CGFloat { Palette.lineScale(colorScheme) }
     let model: BubbleModel
     let onTap: () -> Void
     let onMove: (CGFloat) -> Void
@@ -148,7 +152,7 @@ private struct BubbleView: View {
                 .offset(y: 2)
                 .frame(width: UnreadBubble.size, height: UnreadBubble.size)
         }
-        .buttonStyle(BubblePressStyle())
+        .buttonStyle(BubblePressStyle(line: line))
         .overlay(alignment: .topTrailing) { badge.offset(x: 6, y: -6) }
         .offset(x: max(dragX, 0))
         .opacity(1 - min(max(dragX, 0) / 80, 0.7))
@@ -194,11 +198,11 @@ private struct BubbleView: View {
         Text(model.count > 9 ? "9+" : "\(model.count)")
             .font(.text(13, .bold))
             .monospacedDigit()
-            .foregroundStyle(Brand.ink)
+            .foregroundStyle(Palette.active.onAccent)
             .frame(minWidth: 24, minHeight: 24)
             .padding(.horizontal, model.count > 9 ? 3 : 0)
-            .background(Brand.pink, in: Capsule())
-            .overlay(Capsule().strokeBorder(Brand.ink, lineWidth: 2.5))
+            .background(Palette.active.accent, in: Capsule())
+            .overlay(Capsule().strokeBorder(Palette.active.outline, lineWidth: 2.5 * line))
             .accessibilityHidden(true)
     }
 
@@ -208,14 +212,16 @@ private struct BubbleView: View {
     }
 }
 
-/// Lemon circle, ink outline, hard shadow; presses down into the shadow like the brand's buttons.
+/// Lemon (`primary`) circle, ink outline, hard shadow; presses down into the shadow like the brand's buttons.
 private struct BubblePressStyle: ButtonStyle {
+    let line: CGFloat
     func makeBody(configuration: Configuration) -> some View {
         let pressed = configuration.isPressed
+        let palette = Palette.active
         configuration.label
-            .background(Circle().fill(Brand.lemon))
-            .overlay(Circle().strokeBorder(Brand.ink, lineWidth: 3))
-            .background(Circle().fill(Brand.ink).offset(x: pressed ? 1 : 4, y: pressed ? 1 : 4))
+            .background(Circle().fill(palette.brand))
+            .overlay(Circle().strokeBorder(palette.outline, lineWidth: 3 * line))
+            .background(Circle().fill(palette.shadow).offset(x: pressed ? 1 : 4, y: pressed ? 1 : 4))
             .offset(x: pressed ? 3 : 0, y: pressed ? 3 : 0)
             .animation(.snappy(duration: 0.12), value: pressed)
     }

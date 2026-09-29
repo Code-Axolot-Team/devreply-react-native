@@ -8,6 +8,10 @@ enum Keychain {
     private static let service = "com.devreply.sdk.install"
 
     static func token(for account: String) -> String? {
+        string(for: account, service: service)
+    }
+
+    private static func string(for account: String, service: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -23,15 +27,41 @@ enum Keychain {
     }
 
     static func setToken(_ token: String, for account: String) {
-        deleteToken(for: account)
+        set(token, for: account, service: service)
+    }
+
+    private static func set(_ value: String, for account: String, service: String) {
+        delete(account: account, service: service)
         let item: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData as String: Data(token.utf8),
+            kSecValueData as String: Data(value.utf8),
         ]
         SecItemAdd(item as CFDictionary, nil)
+    }
+
+    /// Deletions still owed to the server (`DevReply.deleteUser` while it couldn't be reached): the old
+    /// install tokens, retried until the server confirms. Their own service, so a reinstall's wipe keeps
+    /// them: the user asked to be deleted, and that still happens.
+    private static let pendingService = "com.devreply.sdk.pending-deletion"
+    /// A small list: more than this many unconfirmed deletions on one device keeps the newest.
+    static let maxPendingDeletions = 10
+
+    static func pendingDeletions(for account: String) -> [String] {
+        guard let json = string(for: account, service: pendingService),
+              let tokens = try? JSONDecoder().decode([String].self, from: Data(json.utf8)) else { return [] }
+        return tokens
+    }
+
+    static func setPendingDeletions(_ tokens: [String], for account: String) {
+        let kept = Array(tokens.suffix(maxPendingDeletions))
+        guard !kept.isEmpty, let data = try? JSONEncoder().encode(kept) else {
+            delete(account: account, service: pendingService)
+            return
+        }
+        set(String(decoding: data, as: UTF8.self), for: account, service: pendingService)
     }
 
     /// The signed-in user this install belongs to (`DevReply.login`), if any.
@@ -57,6 +87,10 @@ enum Keychain {
     }
 
     static func deleteToken(for account: String) {
+        delete(account: account, service: service)
+    }
+
+    private static func delete(account: String, service: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

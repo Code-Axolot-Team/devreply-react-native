@@ -7,7 +7,10 @@ export interface Spec extends TurboModule {
   login(userId: string): void
   logout(): void
   deleteUser(): Promise<boolean>
-  present(category: string | null): void
+  present(category: string | null, message: string | null, attributes: CodegenTypes.UnsafeObject): boolean
+  isAvailable(): boolean
+  /** lightMode: keep | reset | custom; darkMode: keep | off | default | custom. */
+  setTheme(lightMode: string, light: CodegenTypes.UnsafeObject | null, darkMode: string, dark: CodegenTypes.UnsafeObject | null): void
   setUser(name: string | null, email: string | null): void
   setAttributes(attributes: CodegenTypes.UnsafeObject): void
   getUnreadCount(): number
@@ -18,6 +21,7 @@ export interface Spec extends TurboModule {
   handle(url: string): void
   setLocale(tag: string | null): void
   readonly onUnreadChange: CodegenTypes.EventEmitter<{ count: number }>
+  readonly onEvent: CodegenTypes.EventEmitter<{ type: string; conversationId: string | null; category: string | null }>
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('DevReply')

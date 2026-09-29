@@ -12,6 +12,8 @@ final class InAppBanner {
     private var hideTask: Task<Void, Never>?
 
     func show(title: String, body: String, conversationID: UUID?) {
+        // Switched off in the dashboard: no banners.
+        guard Messenger.shared.isAvailable else { return }
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }) else { return }
@@ -22,6 +24,8 @@ final class InAppBanner {
         let top = scene.windows.first(where: \.isKeyWindow)?.safeAreaInsets.top ?? 54
         window.frame = CGRect(x: 0, y: 0, width: scene.screen.bounds.width, height: top + 140)
         window.windowLevel = .statusBar + 1
+        // Light or dark like the app's own window (its `overrideUserInterfaceStyle` too), for the dark theme.
+        window.overrideUserInterfaceStyle = PassthroughWindow.appStyle(in: scene)
         window.backgroundColor = .clear
         let view = BannerView(title: title, text: body) { [weak self] in
             self?.hide(animated: false)
@@ -60,6 +64,13 @@ final class InAppBanner {
 /// on the app's own window.
 final class PassthroughWindow: UIWindow {
     override var canBecomeKey: Bool { false }
+
+    /// The app's own window's appearance override, so DevReply's windows match it.
+    static func appStyle(in scene: UIWindowScene) -> UIUserInterfaceStyle {
+        let app = scene.windows.first { !($0 is PassthroughWindow) && $0.isKeyWindow }
+            ?? scene.windows.first { !($0 is PassthroughWindow) }
+        return app?.overrideUserInterfaceStyle ?? .unspecified
+    }
 }
 
 private struct BannerView: View {
@@ -69,6 +80,7 @@ private struct BannerView: View {
     let onDismiss: () -> Void
     @State private var shown = false
     @State private var drag: CGFloat = 0
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack {
@@ -80,7 +92,7 @@ private struct BannerView: View {
                             Kicker(text: title.isEmpty ? t("banner.new_reply") : title, inverted: true)
                             Text(text)
                                 .font(.text(15, .medium))
-                                .foregroundStyle(Brand.ink)
+                                .foregroundStyle(Palette.active.onCard)
                                 .lineLimit(3)
                                 .multilineTextAlignment(.leading)
                         }
@@ -89,7 +101,7 @@ private struct BannerView: View {
                     .padding(14)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(BrutalPressStyle(fill: Brand.lemon, shadow: 5))
+                .buttonStyle(BrutalPressStyle(fill: Palette.active.card, shadow: 5))
                 .accessibilityIdentifier("devreply.banner")
                 .accessibilityHint(t("banner.opens"))
                 .padding(.horizontal, 12)
@@ -102,6 +114,7 @@ private struct BannerView: View {
             Spacer()
         }
         .padding(.top, 8)
+        .environment(\.devReplyLine, Palette.lineScale(colorScheme))
         .onAppear {
             _ = BrandFont.register
             withAnimation(.spring(duration: 0.35)) { shown = true }

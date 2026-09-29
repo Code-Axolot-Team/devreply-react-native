@@ -10,6 +10,8 @@ struct MessengerView: View {
     let startCategory: DevReplyCategory?
     let openConversation: UUID?
     @State private var path: [Route]
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     init(startCategory: DevReplyCategory? = nil) {
         self.startCategory = startCategory
@@ -36,25 +38,35 @@ struct MessengerView: View {
                     }
                 }
         }
-        .tint(DevReplyTheme.current.ink)
-        .onAppear { Messenger.shared.isPresented = true }
-        .onDisappear { Messenger.shared.isPresented = false }
+        .tint(Palette.active.ink)
+        .onAppear {
+            // The team switched the chat off (or the app never configured it): nothing to show.
+            if !Messenger.shared.isAvailable { dismiss() }
+            Messenger.shared.messengerAppeared()
+        }
+        .onDisappear { Messenger.shared.messengerDisappeared() }
+        // Switched off in the dashboard while open: close.
+        .onChange(of: Messenger.shared.isAvailable) { _, available in if !available { dismiss() } }
         .task {
             guard let id = openConversation else { return }
             if !Messenger.shared.conversations.contains(where: { $0.id == id }) { await Messenger.shared.refresh() }
             if let c = Messenger.shared.conversations.first(where: { $0.id == id }) { path = [.conversation(c)] }
         }
-        // The brand is a light look; keep text fields and sheets consistent in dark mode too.
-        .environment(\.colorScheme, .light)
+        // Without a dark theme the chat is a light look: keep text fields and sheets consistent in dark
+        // mode too. With `DevReply.darkTheme`, it follows the app's appearance.
+        .environment(\.colorScheme, Palette.followsAppearance ? colorScheme : .light)
+        .environment(\.devReplyLine, Palette.lineScale(Palette.followsAppearance ? colorScheme : .light))
         // Dates, relative times and system controls in the chat's language (DevReply.setLocale).
         .environment(\.locale, L10n.shared.locale)
     }
 }
 
 struct HomeView: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     @Environment(\.dismiss) private var dismiss
     private var messenger: Messenger { Messenger.shared }
-    private var theme: DevReplyTheme { DevReplyTheme.current }
+    private var palette: Palette { Palette.active }
 
     var body: some View {
         ScrollView {
@@ -68,7 +80,7 @@ struct HomeView: View {
                     }
                     Text(t("powered"))
                         .font(.text(12, .medium, relativeTo: .caption))
-                        .foregroundStyle(Brand.muted)
+                        .foregroundStyle(palette.muted)
                         .frame(maxWidth: .infinity)
                 }
                 .padding(.horizontal, 20)
@@ -76,7 +88,7 @@ struct HomeView: View {
                 .padding(.bottom, 32)
             }
         }
-        .background(theme.background.ignoresSafeArea())
+        .background(palette.background.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
         .refreshable { await messenger.refresh() }
         .task {
@@ -98,26 +110,26 @@ struct HomeView: View {
             }
             Text(messenger.config.greetingText)
                 .font(.display(38, relativeTo: .largeTitle))
-                .foregroundStyle(theme.ink)
+                .foregroundStyle(palette.onHeader)
                 .fixedSize(horizontal: false, vertical: true)
             Text(messenger.config.introText)
                 .font(.text(17, .medium))
-                .foregroundStyle(theme.ink)
+                .foregroundStyle(palette.onHeader)
                 .fixedSize(horizontal: false, vertical: true)
             if !messenger.config.replyTime.isEmpty || !messenger.config.team.isEmpty {
                 HStack(spacing: 12) {
                     if !messenger.config.team.isEmpty { teamFaces }
                     if !messenger.config.replyTime.isEmpty {
                         HStack(spacing: 8) {
-                            Rectangle().fill(Brand.online).frame(width: 10, height: 10)
-                                .overlay(Rectangle().strokeBorder(theme.ink, lineWidth: 1.5))
+                            Rectangle().fill(palette.success).frame(width: 10, height: 10)
+                                .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 1.5 * line))
                             Text(messenger.config.replyTimeText)
                                 .font(.text(14, .bold, relativeTo: .footnote))
-                                .foregroundStyle(theme.ink)
+                                .foregroundStyle(palette.ink)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .brutal(fill: .white, shadow: 3, lineWidth: 2.5)
+                        .brutal(shadow: 3, lineWidth: 2.5)
                     }
                 }
             }
@@ -127,8 +139,8 @@ struct HomeView: View {
         .padding(.bottom, 26)
         .frame(maxWidth: .infinity, alignment: .leading)
         // Extends upwards so pulling down shows lemon, not a gap.
-        .background(theme.primary.padding(.top, -600))
-        .overlay(alignment: .bottom) { Rectangle().fill(theme.ink).frame(height: 3) }
+        .background(palette.header.padding(.top, -600))
+        .overlay(alignment: .bottom) { Rectangle().fill(palette.outline).frame(height: 3 * line) }
     }
 
     /// Who answers here: up to three teammates' faces, overlapping.
@@ -149,7 +161,7 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(t("start_title"))
                 .font(.display(22, relativeTo: .title2))
-                .foregroundStyle(theme.ink)
+                .foregroundStyle(palette.ink)
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 14) {
                 ForEach(messenger.config.startButtons) { button in
                     NavigationLink(value: Route.new(button.category)) {
@@ -166,7 +178,7 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(t("your_conversations"))
                 .font(.display(22, relativeTo: .title2))
-                .foregroundStyle(theme.ink)
+                .foregroundStyle(palette.ink)
             // Open ones first, resolved below.
             ForEach(messenger.conversations.sorted { ($0.status == "closed" ? 1 : 0) < ($1.status == "closed" ? 1 : 0) }.prefix(20)) { conversation in
                 NavigationLink(value: Route.conversation(conversation)) {
@@ -184,14 +196,12 @@ private struct StartTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            button.category.icon
-                .resizable()
-                .scaledToFit()
+            CategoryIcon(category: button.category)
                 .frame(width: 46, height: 46)
                 .accessibilityHidden(true)
             Text(title)
                 .font(.text(16, .bold, relativeTo: .subheadline))
-                .foregroundStyle(Brand.ink)
+                .foregroundStyle(Palette.active.ink)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -201,7 +211,10 @@ private struct StartTile: View {
 }
 
 private struct ConversationRow: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     let conversation: Conversation
+    private var palette: Palette { Palette.active }
 
     /// The last message; the server's resolved line in the chat's language.
     static func preview(_ text: String?) -> String {
@@ -212,9 +225,7 @@ private struct ConversationRow: View {
     var body: some View {
         let category = conversation.category ?? .other
         HStack(alignment: .top, spacing: 12) {
-            category.icon
-                .resizable()
-                .scaledToFit()
+            CategoryIcon(category: category)
                 .frame(width: 34, height: 34)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
@@ -223,30 +234,30 @@ private struct ConversationRow: View {
                     if conversation.status == "closed" {
                         Text(t("resolved"))
                             .font(.text(11, .bold, relativeTo: .caption2))
-                            .foregroundStyle(Brand.ink)
+                            .foregroundStyle(palette.onResolved)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color(red: 0.81, green: 0.95, blue: 0.89))
-                            .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 1.5))
+                            .background(palette.resolved)
+                            .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 1.5 * line))
                     }
                     Spacer()
                     Text(conversation.lastMessageAt.formatted(.relative(presentation: .named).locale(L10n.shared.locale)))
                         .font(.text(12, .medium, relativeTo: .caption))
-                        .foregroundStyle(Brand.muted)
+                        .foregroundStyle(palette.muted)
                 }
                 Text(Self.preview(conversation.lastText))
                     .font(.text(15, conversation.unread > 0 ? .bold : .regular, relativeTo: .subheadline))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(palette.ink)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
             }
             if conversation.unread > 0 {
                 Text("\(conversation.unread)")
                     .font(.text(13, .bold, relativeTo: .caption))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(palette.onAccent)
                     .frame(minWidth: 24, minHeight: 24)
-                    .background(Brand.pink)
-                    .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2))
+                    .background(palette.accent)
+                    .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 2 * line))
                     .accessibilityLabel(t("a11y.unread", ["count": "\(conversation.unread)"]))
             }
         }
@@ -256,12 +267,12 @@ private struct ConversationRow: View {
     }
 }
 
-/// The team's avatar: initials on a square, ink outline.
 /// The team's avatar: the app icon when the team uploaded one, else initials on a square.
 struct TeamAvatar: View {
     let name: String
     let size: CGFloat
-    var fill: Color = .white
+    /// `nil` = the theme's `surface`.
+    var fill: Color? = nil
     var imageURL: URL? = nil
 
     var body: some View {
@@ -275,16 +286,19 @@ struct PersonaFace: View {
     var size: CGFloat = 22
 
     var body: some View {
-        SquareFace(name: persona.name, imageURL: persona.avatarUrl, size: size, fill: .white, lineWidth: 2, fallback: "?")
+        SquareFace(name: persona.name, imageURL: persona.avatarUrl, size: size, fill: nil, lineWidth: 2, fallback: "?")
     }
 }
 
 /// A square photo from the API (app icon, persona photo), with initials while it loads or if it fails.
 struct SquareFace: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     let name: String
     let imageURL: URL?
     let size: CGFloat
-    let fill: Color
+    /// `nil` = the theme's `surface` with `ink` initials; the brand colour gets `onBrand` initials.
+    let fill: Color?
     let lineWidth: CGFloat
     let fallback: String
 
@@ -301,17 +315,18 @@ struct SquareFace: View {
         }
         .frame(width: size, height: size)
         .clipped()
-        .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: lineWidth))
+        .overlay(Rectangle().strokeBorder(Palette.active.outline, lineWidth: lineWidth * line))
         .accessibilityHidden(true)
     }
 
     private var initials: some View {
         let letters = name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined()
+        let palette = Palette.active
         return Text(letters.isEmpty ? fallback : letters.uppercased())
             .font(.display(size * 0.4, relativeTo: .body))
-            .foregroundStyle(Brand.ink)
+            .foregroundStyle(fill == nil ? palette.ink : palette.onBrand)
             .frame(width: size, height: size)
-            .background(fill)
+            .background(fill ?? palette.surface)
     }
 }
 
@@ -321,19 +336,19 @@ struct ErrorNote: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(message).font(.text(15, .medium)).foregroundStyle(Brand.ink)
+            Text(message).font(.text(15, .medium)).foregroundStyle(Palette.active.ink)
             Button(action: retry) {
                 Text(t("try_again"))
                     .font(.text(15, .bold))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(Palette.active.onAccent)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
             }
-            .buttonStyle(BrutalPressStyle(fill: Brand.pink, shadow: 4))
+            .buttonStyle(BrutalPressStyle(fill: Palette.active.accent, shadow: 4))
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .brutal(fill: .white, shadow: 0)
+        .brutal(shadow: 0)
     }
 
     private var message: String {

@@ -5,7 +5,14 @@
 //   DevReply.present()                                     // from any button
 import { Linking, Platform } from 'react-native'
 
-import type { DevReplyAttribute, DevReplyCategory, DevReplyKeys } from './DevReply.types'
+import type {
+  DevReplyAttribute,
+  DevReplyCategory,
+  DevReplyEvent,
+  DevReplyKeys,
+  DevReplyPresentOptions,
+  DevReplyThemeColors,
+} from './DevReply.types'
 import Native from './NativeDevReply'
 
 export * from './DevReply.types'
@@ -89,15 +96,58 @@ const DevReply = {
 
   /**
    * When your user deletes their account: deletes their name, email, attributes, conversations,
-   * messages and files from DevReply, then logs out. Resolves to false if DevReply couldn't be reached.
+   * messages and files from DevReply, then logs out. True = deleted now; false = DevReply couldn't reach
+   * the server: the device already forgot the user and DevReply keeps retrying at the next launches.
    */
   deleteUser(): Promise<boolean> {
     return Native.deleteUser()
   },
 
-  /** Opens the chat over the current screen. With a category, straight into a new conversation. */
-  present(category?: DevReplyCategory): void {
-    Native.present(category ?? null)
+  /**
+   * Opens the chat over the current screen. With a category, straight into a new conversation. Options:
+   * `message` prefills that conversation's composer (the user sends it), `attributes` go to the team with
+   * that conversation only (where it was opened, an error code…). Returns false when the chat is switched
+   * off in the dashboard (or DevReply isn't configured): then nothing opens.
+   *
+   *   DevReply.present('billing', { message: "My purchase didn't go through", attributes: { source: 'paywall' } })
+   */
+  present(category?: DevReplyCategory | null, options?: DevReplyPresentOptions): boolean {
+    return Native.present(category ?? null, options?.message ?? null, options?.attributes ?? {})
+  },
+
+  /** False when the team switched the chat off in the dashboard: hide your own "Message us" buttons. */
+  get isAvailable(): boolean {
+    return Native.isAvailable()
+  },
+
+  /**
+   * The chat's colours, as hex strings; any left out keep DevReply's own. Dark mode is off by default
+   * (the chat stays light); `dark: 'default'` turns on DevReply's dark theme, your own colours turn on
+   * yours, `dark: null` turns it off again. A side you leave out stays as it is; `light: null` goes back
+   * to DevReply's light colours.
+   *
+   *   DevReply.setTheme({ light: { primary: '#0A84FF' }, dark: 'default' })
+   */
+  setTheme(theme: { light?: DevReplyThemeColors | null; dark?: DevReplyThemeColors | 'default' | null }): void {
+    const lightMode = theme.light === undefined ? 'keep' : theme.light === null ? 'reset' : 'custom'
+    const darkMode = theme.dark === undefined ? 'keep' : theme.dark === null ? 'off' : theme.dark === 'default' ? 'default' : 'custom'
+    Native.setTheme(lightMode, lightMode === 'custom' ? (theme.light as object) : null, darkMode, darkMode === 'custom' ? (theme.dark as object) : null)
+  },
+
+  /**
+   * Called for what happens in the chat (opened, closed, conversation started, message sent), e.g. to
+   * measure which button brings conversations. Call `.remove()` on the result to stop.
+   */
+  addEventListener(listener: (event: DevReplyEvent) => void): { remove(): void } {
+    return Native.onEvent((e) => {
+      if (e.type === 'conversationStarted') {
+        listener({ type: 'conversationStarted', conversationId: e.conversationId ?? '', category: (e.category as DevReplyCategory | null) ?? null })
+      } else if (e.type === 'messageSent') {
+        listener({ type: 'messageSent', conversationId: e.conversationId ?? '' })
+      } else if (e.type === 'messengerOpened' || e.type === 'messengerClosed') {
+        listener({ type: e.type })
+      }
+    })
   },
 
   /**

@@ -155,6 +155,8 @@ enum PushHandling {
     /// Foreground: DevReply's own banner (unless that conversation is on screen); keep it in the list.
     static func willPresent(conversationID id: UUID, title: String, body: String) -> UNNotificationPresentationOptions {
         Task { await Messenger.shared.refresh() }
+        // Switched off in the dashboard: DevReply's notification, but nothing to show.
+        if !Messenger.shared.isAvailable { return [] }
         if Messenger.shared.visibleConversation == id { return [] }
         if Messenger.shared.isPresented { return [.list] }
         InAppBanner.shared.show(title: title, body: body, conversationID: id)

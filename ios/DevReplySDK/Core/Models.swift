@@ -1,7 +1,7 @@
 import Foundation
 
 /// Version of this SDK. Sent on install registration and compared with each block's `min_sdk`.
-public let devReplySDKVersion = "0.4.3"
+public let devReplySDKVersion = "0.4.4"
 
 /// What a conversation is about. Set by the start button the user picked (spec 05).
 public enum DevReplyCategory: String, Codable, Sendable, CaseIterable {
@@ -99,9 +99,13 @@ struct MessengerConfig: Codable, Sendable, Equatable {
     let localize: [String]?
     /// The reply time as a key (`3_working_days`): the chat says it in the user's language.
     let replyWithinKey: String?
+    /// False when the team switched the chat off in the dashboard (0.4.4): `DevReply.isAvailable`.
+    /// Missing (older servers) = on.
+    let enabled: Bool
 
     private enum Keys: String, CodingKey {
         case appName, teamName, greeting, intro, replyTime, replyWithin, startButtons, appIconUrl, team, localize, replyWithinKey
+        case enabled
     }
 
     func encode(to encoder: Encoder) throws {
@@ -117,12 +121,13 @@ struct MessengerConfig: Codable, Sendable, Equatable {
         try c.encode(team, forKey: .team)
         try c.encodeIfPresent(localize, forKey: .localize)
         try c.encodeIfPresent(replyWithinKey, forKey: .replyWithinKey)
+        try c.encode(enabled, forKey: .enabled)
     }
 
     init(
         appName: String, teamName: String, greeting: String, intro: String, replyTime: String, replyWithin: String,
         startButtons: [StartButton], appIconUrl: URL? = nil, team: [Persona] = [],
-        localize: [String]? = nil, replyWithinKey: String? = nil
+        localize: [String]? = nil, replyWithinKey: String? = nil, enabled: Bool = true
     ) {
         self.appName = appName
         self.teamName = teamName
@@ -135,6 +140,7 @@ struct MessengerConfig: Codable, Sendable, Equatable {
         self.team = team
         self.localize = localize
         self.replyWithinKey = replyWithinKey
+        self.enabled = enabled
     }
 
     /// Every field is optional on the wire; missing ones fall back to the placeholder.
@@ -153,6 +159,7 @@ struct MessengerConfig: Codable, Sendable, Equatable {
         team = Array((((try? c.decodeIfPresent(Lossy<Persona>.self, forKey: .team)) ?? nil)?.items ?? []).prefix(3))
         localize = ((try? c.decodeIfPresent(Lossy<String>.self, forKey: .localize)) ?? nil)?.items
         replyWithinKey = string(.replyWithinKey) ?? Self.presetKey(forEnglish: replyWithin)
+        enabled = ((try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? nil) ?? true
     }
 
     /// The preset behind an English reply time ("3 working days" → `3_working_days`), for servers that
@@ -391,6 +398,37 @@ public enum DevReplyAttribute: Sendable, Equatable, Encodable,
         case .number(let n): try c.encode(n)
         case .bool(let b): try c.encode(b)
         }
+    }
+}
+
+extension DevReplyAttribute {
+    /// A conversation's context (`DevReply.present(attributes:)`) as the server accepts it: at most 20
+    /// values, names of 1–40 letters, digits, `_ - .` or space, text up to 500 characters, finite numbers.
+    /// Anything else is left out (with a note in the console) so the conversation itself never fails.
+    static func context(_ attributes: [String: DevReplyAttribute]) -> [String: DevReplyAttribute] {
+        var out: [String: DevReplyAttribute] = [:]
+        for key in attributes.keys.sorted() {
+            guard let value = attributes[key] else { continue }
+            let validKey = (1...40).contains(key.count)
+                && key.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "_-. ".unicodeScalars.contains($0)) }
+            guard validKey else {
+                print("DevReply: context \"\(key)\" left out: names are 1–40 letters, digits, _ - . or space.")
+                continue
+            }
+            guard out.count < 20 else {
+                print("DevReply: context \"\(key)\" left out: at most 20 values.")
+                continue
+            }
+            switch value {
+            case .number(let n) where !n.isFinite:
+                print("DevReply: context \"\(key)\" left out: not a finite number.")
+            case .string(let text) where text.count > 500:
+                out[key] = .string(String(text.prefix(500)))
+            default:
+                out[key] = value
+            }
+        }
+        return out
     }
 }
 

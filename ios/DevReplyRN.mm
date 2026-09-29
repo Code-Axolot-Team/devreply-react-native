@@ -18,6 +18,13 @@
     _bridge.onUnread = ^(NSInteger count) {
       [weakSelf emitOnUnreadChange:@{@"count" : @(count)}];
     };
+    _bridge.onEvent = ^(NSString *type, NSString *conversationId, NSString *category) {
+      [weakSelf emitOnEvent:@{
+        @"type" : type,
+        @"conversationId" : conversationId ?: (id)[NSNull null],
+        @"category" : category ?: (id)[NSNull null],
+      }];
+    };
   }
   return self;
 }
@@ -49,9 +56,19 @@
   }];
 }
 
-- (void)present:(NSString *)category
+- (NSNumber *)present:(NSString *)category message:(NSString *)message attributes:(NSDictionary *)attributes
 {
-  [_bridge present:category];
+  return @([_bridge present:category message:message attributes:attributes ?: @{}]);
+}
+
+- (NSNumber *)isAvailable
+{
+  return @(_bridge.isAvailable);
+}
+
+- (void)setTheme:(NSString *)lightMode light:(NSDictionary *)light darkMode:(NSString *)darkMode dark:(NSDictionary *)dark
+{
+  [_bridge setTheme:lightMode light:light darkMode:darkMode dark:dark];
 }
 
 - (void)setUser:(NSString *)name email:(NSString *)email

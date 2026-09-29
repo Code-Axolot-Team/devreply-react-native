@@ -39,9 +39,14 @@ public enum DevReply {
     }
 
     /// When your user deletes their account (Apple requires account deletion in the app): deletes their
-    /// name, email, attributes, conversations, messages and files from DevReply, then logs out. Returns
-    /// false if DevReply couldn't be reached; try again, or delete from your backend
-    /// (`DELETE /v1/project/users?user_id=…` with a secret key).
+    /// name, email, attributes, conversations, messages and files from DevReply, and the device forgets
+    /// the user (like `logout`). It never gives up:
+    ///
+    /// - `true`: deleted on the server now.
+    /// - `false`: DevReply couldn't be reached (or the server was busy). The device has already forgotten
+    ///   the user, and DevReply keeps retrying the deletion at every `configure` and whenever the app comes
+    ///   back to the foreground, until the server confirms. Nothing for you to do; your backend can also
+    ///   delete the user (`DELETE /v1/project/users?user_id=…` with a secret key).
     @discardableResult
     public static func deleteUser() async -> Bool {
         await Messenger.shared.deleteUser()
@@ -82,6 +87,43 @@ public enum DevReply {
     public static var theme: DevReplyTheme {
         get { DevReplyTheme.current }
         set { DevReplyTheme.current = newValue }
+    }
+
+    /// The messenger's look in dark mode. `nil` (the default): the chat stays light, as it always was.
+    /// Set it, and the chat uses it whenever the app is in dark appearance (the window's trait
+    /// collection, so `overrideUserInterfaceStyle` counts). Set before presenting.
+    ///
+    /// ```swift
+    /// DevReply.darkTheme = .dark     // DevReply's own dark look, or DevReplyTheme(…) with your colours
+    /// ```
+    public static var darkTheme: DevReplyTheme? {
+        get { DevReplyTheme.currentDark }
+        set { DevReplyTheme.currentDark = newValue }
+    }
+
+    /// False when DevReply isn't configured, or your team switched the chat off in the dashboard
+    /// (Settings → Messenger). Then `present` shows nothing and returns false, and the unread bubble and
+    /// banners stay hidden; login, logout, deleteUser, push and attributes keep working. Hide your own
+    /// "Contact us" button with it if you like. True until the first config arrives.
+    public static var isAvailable: Bool { Messenger.shared.isAvailable }
+
+    // MARK: Events
+
+    /// Listens to what happens in the chat, for your analytics. Called on the main actor; add as many
+    /// listeners as you like, and keep the subscription to `cancel()` one.
+    ///
+    /// ```swift
+    /// DevReply.addEventListener { event in
+    ///     switch event {
+    ///     case .messengerOpened: analytics.log("support_opened")
+    ///     case .conversationStarted(_, let category): analytics.log("support_started", category?.rawValue)
+    ///     case .messageSent, .messengerClosed: break
+    ///     }
+    /// }
+    /// ```
+    @discardableResult
+    public static func addEventListener(_ listener: @escaping @MainActor (DevReplyEvent) -> Void) -> DevReplySubscription {
+        Events.add(listener)
     }
 
     /// Unread replies from the team. Observable: SwiftUI views that read it update on their own.
@@ -182,8 +224,25 @@ public enum DevReply {
     }
 
     /// Opens the messenger over the current screen. With a category, it goes straight to a new conversation.
-    public static func present(category: DevReplyCategory? = nil) {
-        presentMessenger(MessengerView(startCategory: category))
+    ///
+    /// - `message`: prefills the composer of the new conversation (straight away with a category, else once
+    ///   the user taps a start button). Never sent on its own: the user sees it and can edit it.
+    /// - `attributes`: context for the team, sent with the conversation started from this presentation
+    ///   (only that one, not the user's profile). Text, number or true/false; up to 20.
+    ///
+    /// Returns false, and shows nothing, when DevReply isn't configured or the chat is switched off
+    /// (`isAvailable`); true when the messenger opened.
+    ///
+    /// ```swift
+    /// DevReply.present(category: .bug, message: "The export failed: ", attributes: ["screen": "export", "items": 42])
+    /// ```
+    @discardableResult
+    public static func present(
+        category: DevReplyCategory? = nil, message: String? = nil, attributes: [String: DevReplyAttribute] = [:]
+    ) -> Bool {
+        guard Messenger.shared.isAvailable, topViewController() != nil else { return false }
+        Messenger.shared.setPresentation(message: message, attributes: attributes)
+        return presentMessenger(MessengerView(startCategory: category))
     }
 
     /// Closes the messenger if it's open (the user logged out).
@@ -195,20 +254,31 @@ public enum DevReply {
 
     /// Opens the messenger on one conversation (from a push or the in-app banner).
     static func open(conversationID: UUID?) {
+        // Switched off in the dashboard: a push tap or link opens nothing.
+        guard Messenger.shared.isAvailable else { return }
         if Messenger.shared.isPresented, let top = topViewController(), top is UIHostingController<MessengerView> {
             top.dismiss(animated: false)
         }
         presentMessenger(MessengerView(openConversation: conversationID))
     }
 
-    private static func presentMessenger(_ view: MessengerView) {
+    @discardableResult
+    private static func presentMessenger(_ view: MessengerView) -> Bool {
         // The chat is opening: a banner about a reply would only sit on top of it.
         InAppBanner.shared.hide(animated: false)
-        guard let top = topViewController() else { return }
+        guard let top = topViewController() else { return false }
         let host = UIHostingController(rootView: view)
+        if Palette.followsAppearance {
+            // The sheet itself (behind the keyboard, the bounce) in the theme's page colour, light or dark.
+            host.view.backgroundColor = UIColor(Palette.active.background)
+        } else {
+            // No dark theme: the sheet, its grabber, menus and system pickers stay light like the chat.
+            host.overrideUserInterfaceStyle = .light
+        }
         host.modalPresentationStyle = .pageSheet
         host.sheetPresentationController?.prefersGrabberVisible = true
         top.present(host, animated: true)
+        return true
     }
 
     /// Fetches unread replies, e.g. when the app returns to the foreground.
@@ -228,11 +298,25 @@ public enum DevReply {
 }
 
 public extension View {
-    /// Presents the DevReply messenger as a sheet, the SwiftUI way.
+    /// Presents the DevReply messenger as a sheet, the SwiftUI way. If the chat is switched off
+    /// (`DevReply.isAvailable`), the sheet closes itself.
     func devReplyMessenger(isPresented: Binding<Bool>, category: DevReplyCategory? = nil) -> some View {
         sheet(isPresented: isPresented) {
             MessengerView(startCategory: category)
                 .presentationDragIndicator(.visible)
+                .modifier(SheetAppearance())
+        }
+    }
+}
+
+/// The SwiftUI sheet's own colour scheme and background, like `presentMessenger` does for UIKit: light
+/// without a dark theme, else the app's appearance with the theme's page colour.
+private struct SheetAppearance: ViewModifier {
+    func body(content: Content) -> some View {
+        if Palette.followsAppearance {
+            content.presentationBackground(Palette.active.background)
+        } else {
+            content.preferredColorScheme(.light)
         }
     }
 }

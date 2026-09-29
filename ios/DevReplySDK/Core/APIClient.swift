@@ -62,12 +62,14 @@ struct APIClient: Sendable {
         return list.items
     }
 
+    /// `context`: what the app passed to `DevReply.present(attributes:)`, for this conversation only.
     func startConversation(
-        token: String, category: DevReplyCategory?, text: String, attachments: [UUID]
+        token: String, category: DevReplyCategory?, text: String, attachments: [UUID],
+        context: [String: DevReplyAttribute] = [:]
     ) async throws -> StartedConversation {
         try await send(
             "POST", "v1/conversations", token: token,
-            body: MessageBody(text: text, category: category?.rawValue, attachmentIds: attachments)
+            body: MessageBody(text: text, category: category?.rawValue, attachmentIds: attachments, context: context)
         )
     }
 
@@ -78,7 +80,7 @@ struct APIClient: Sendable {
     func sendMessage(token: String, conversation: UUID, text: String, attachments: [UUID]) async throws -> Message {
         try await send(
             "POST", "v1/conversations/\(conversation.uuidString.lowercased())/messages", token: token,
-            body: MessageBody(text: text, category: nil, attachmentIds: attachments)
+            body: MessageBody(text: text, category: nil, attachmentIds: attachments, context: [:])
         )
     }
 
@@ -183,12 +185,22 @@ struct APIClient: Sendable {
         return slot.id
     }
 
-    private struct MessageBody: Encodable {
+    struct MessageBody: Encodable {
         let text: String
         let category: String?
         let attachmentIds: [UUID]
+        /// Only on a new conversation, and only when the app passed some (older servers never see the key).
+        let context: [String: DevReplyAttribute]
 
-        enum CodingKeys: String, CodingKey { case text, category, attachmentIds = "attachment_ids" }
+        enum CodingKeys: String, CodingKey { case text, category, attachmentIds = "attachment_ids", context }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(text, forKey: .text)
+            try c.encodeIfPresent(category, forKey: .category)
+            try c.encode(attachmentIds, forKey: .attachmentIds)
+            if !context.isEmpty { try c.encode(context, forKey: .context) }
+        }
     }
 
     private struct AttachmentRequest: Encodable {

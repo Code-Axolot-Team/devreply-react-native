@@ -128,13 +128,19 @@ final class ConversationModel {
                     try await $0.sendMessage(token: $1, conversation: id, text: item.text, attachments: attachmentIDs)
                 }
                 messages.append(message)
+                Messenger.shared.messageSent(conversationID: id)
             } else {
+                // What the app passed to `present(attributes:)`: goes with this presentation's first new conversation.
+                let context = Messenger.shared.presentationContext
                 let started = try await Messenger.shared.authorized {
-                    try await $0.startConversation(token: $1, category: category, text: item.text, attachments: attachmentIDs)
+                    try await $0.startConversation(
+                        token: $1, category: category, text: item.text, attachments: attachmentIDs, context: context
+                    )
                 }
                 conversation = started.conversation
                 messages.append(started.message)
                 Messenger.shared.upsert(started.conversation)
+                Messenger.shared.conversationStarted(started.conversation.id, category: category)
             }
             pending.removeAll { $0.id == item.id }
         } catch {
@@ -152,6 +158,8 @@ final class ConversationModel {
 // MARK: - Screen
 
 struct ConversationView: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     @State private var model: ConversationModel
     @State private var draft = ""
     @State private var staged: [Staged] = []
@@ -167,7 +175,7 @@ struct ConversationView: View {
     @State private var emailAskDone = false
     private var messenger: Messenger { Messenger.shared }
     private var config: MessengerConfig { messenger.config }
-    private var theme: DevReplyTheme { DevReplyTheme.current }
+    private var palette: Palette { Palette.active }
 
     init(existing: Conversation) {
         _model = State(initialValue: ConversationModel(existing: existing, category: nil))
@@ -220,7 +228,7 @@ struct ConversationView: View {
         // closed, so the drag always goes to the keyboard (in a short chat the sheet would take it).
         .scrollDismissesKeyboard(.interactively)
         .interactiveDismissDisabled(composerFocused)
-        .background(theme.background)
+        .background(palette.background)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if messenger.profile == nil {
                 Color.clear.frame(height: 1)
@@ -240,7 +248,7 @@ struct ConversationView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(theme.primary, for: .navigationBar)
+        .toolbarBackground(palette.header, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -249,16 +257,18 @@ struct ConversationView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(config.teamName.isEmpty ? t("chat") : config.teamName)
                             .font(.display(16, relativeTo: .headline))
-                            .foregroundStyle(theme.ink)
+                            .foregroundStyle(palette.onHeader)
                         if !config.replyTime.isEmpty {
                             Text(config.replyTimeText)
                                 .font(.text(11, .medium, relativeTo: .caption2))
-                                .foregroundStyle(theme.ink.opacity(0.75))
+                                .foregroundStyle(palette.onHeader.opacity(0.75))
                         }
                     }
                 }
             }
         }
+        // The back button sits on `primary`.
+        .tint(palette.onHeader)
         .sensoryFeedback(.impact(weight: .light), trigger: model.sentCount)
         .task(id: model.conversation?.id) {
             await messenger.loadProfileIfNeeded()
@@ -275,8 +285,14 @@ struct ConversationView: View {
             addFiles(result)
         }
         .fullScreenCover(item: $viewing) { ImageViewer(image: $0) }
+        .onChange(of: viewing?.id) { _, id in if id == nil { messenger.isCovered = false } }
         .quickLookPreview($previewFile)
         .onAppear {
+            // `present(message:)`: the new conversation's composer starts with the app's text (never sent
+            // on its own; the user can edit it). Not for conversations opened from the list.
+            if startedHere, model.conversation == nil, draft.isEmpty, let text = messenger.presentationMessage {
+                draft = text
+            }
             if model.conversation == nil && !messenger.needsName { composerFocused = true }
             messenger.visibleConversation = model.conversation?.id
         }
@@ -341,7 +357,11 @@ struct ConversationView: View {
         case .time(let date, _):
             TimeLabel(date: date)
         case .message(let message):
-            MessageView(message: message, teamName: config.teamName, onOpenImage: { viewing = $0 }, onOpenFile: open)
+            MessageView(message: message, teamName: config.teamName, onOpenImage: { image in
+                // A full-screen cover hides the messenger for a moment: that isn't it closing.
+                messenger.isCovered = true
+                viewing = image
+            }, onOpenFile: open)
         case .pending(let pending):
             PendingView(item: pending, teamName: config.teamName)
                 .onTapGesture { if pending.failure != nil { model.retry(pending) } }
@@ -357,20 +377,18 @@ struct ConversationView: View {
         let category = model.category ?? .other
         let title = config.startButtons.first { $0.category == category }.map { config.title(for: $0) } ?? category.defaultTitle
         return VStack(spacing: 16) {
-            category.icon
-                .resizable()
-                .scaledToFit()
+            CategoryIcon(category: category)
                 .frame(width: 64, height: 64)
                 .padding(18)
-                .brutal(fill: .white, shadow: 6)
+                .brutal(shadow: 6)
                 .accessibilityHidden(true)
             Text(title)
                 .font(.display(26, relativeTo: .title))
-                .foregroundStyle(theme.ink)
+                .foregroundStyle(palette.ink)
                 .multilineTextAlignment(.center)
             Text(category.prompt)
                 .font(.text(16, .medium))
-                .foregroundStyle(Brand.muted)
+                .foregroundStyle(palette.muted)
                 .multilineTextAlignment(.center)
         }
         .padding(.top, 36)
@@ -394,7 +412,7 @@ struct ConversationView: View {
                 }
             }
             if let pickError {
-                Text(pickError).font(.text(13, .bold)).foregroundStyle(Color(red: 0.7, green: 0.15, blue: 0.12))
+                Text(pickError).font(.text(13, .bold)).foregroundStyle(palette.error)
             }
             HStack(alignment: .bottom, spacing: 10) {
                 Menu {
@@ -403,23 +421,25 @@ struct ConversationView: View {
                 } label: {
                     Image(systemName: "paperclip")
                         .font(.system(size: 19, weight: .heavy))
-                        .foregroundStyle(Brand.ink)
+                        .foregroundStyle(palette.ink)
                         .frame(width: 46, height: 46)
-                        .brutal(fill: .white, shadow: 3)
+                        .brutal(shadow: 3)
                 }
+                .tint(palette.ink)
                 .accessibilityLabel(t("attach"))
                 .accessibilityIdentifier("devreply.attach")
 
                 TextField(t("composer.label"), text: $draft, prompt: Text(t("composer.placeholder")), axis: .vertical)
                     .font(.text(17))
-                    .foregroundStyle(theme.ink)
+                    .foregroundStyle(palette.ink)
+                    .tint(palette.ink)
                     .lineLimit(1...5)
                     .focused($composerFocused)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
                     .frame(minHeight: 46)
-                    .background(.white)
-                    .overlay(Rectangle().strokeBorder(theme.ink, lineWidth: 3))
+                    .background(palette.surface)
+                    .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 3 * line))
                     .accessibilityIdentifier("devreply.composer")
 
                 Button {
@@ -431,10 +451,10 @@ struct ConversationView: View {
                 } label: {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 19, weight: .black))
-                        .foregroundStyle(theme.ink)
+                        .foregroundStyle(palette.onAccent)
                         .frame(width: 46, height: 46)
                 }
-                .buttonStyle(BrutalPressStyle(fill: theme.accent, shadow: 3))
+                .buttonStyle(BrutalPressStyle(fill: palette.accent, shadow: 3))
                 .disabled(!canSend)
                 .opacity(canSend ? 1 : 0.45)
                 .accessibilityLabel(t("send"))
@@ -443,8 +463,9 @@ struct ConversationView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(.white)
-        .overlay(alignment: .top) { Rectangle().fill(theme.ink).frame(height: 3) }
+        // Down to the screen's bottom edge (under the home indicator), not the sheet's own colour.
+        .background(palette.surface.ignoresSafeArea(.container, edges: .bottom))
+        .overlay(alignment: .top) { Rectangle().fill(palette.outline).frame(height: 3 * line) }
     }
 
     private var canSend: Bool {
@@ -495,11 +516,14 @@ struct ConversationView: View {
 
 /// Asked once, before the first message, unless the host app passed a name with `DevReply.setUser`.
 private struct NameForm: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     @State private var name = ""
     @State private var email = ""
     @State private var saving = false
     @State private var error: String?
     @FocusState private var field: Field?
+    private var palette: Palette { Palette.active }
 
     enum Field { case name, email }
 
@@ -508,7 +532,7 @@ private struct NameForm: View {
             Kicker(text: t("name.kicker"), inverted: true)
             Text(t("name.text"))
                 .font(.text(15, .medium))
-                .foregroundStyle(Brand.ink)
+                .foregroundStyle(palette.onCard)
             input(t("name.placeholder"), text: $name, field: .name)
                 .textContentType(.name)
                 .textInputAutocapitalization(.words)
@@ -524,36 +548,36 @@ private struct NameForm: View {
                 .onSubmit(save)
                 .accessibilityIdentifier("devreply.profile.email")
             if let error {
-                Text(error).font(.text(13, .bold)).foregroundStyle(Color(red: 0.7, green: 0.15, blue: 0.12))
+                Text(error).font(.text(13, .bold)).foregroundStyle(palette.error)
             }
             Button(action: save) {
                 Text(saving ? t("saving") : t("name.start"))
                     .font(.text(16, .bold))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(palette.onAccent)
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
             }
-            .buttonStyle(BrutalPressStyle(fill: Brand.pink, shadow: 4))
+            .buttonStyle(BrutalPressStyle(fill: palette.accent, shadow: 4))
             .disabled(saving || trimmed(name).isEmpty)
             .opacity(trimmed(name).isEmpty ? 0.5 : 1)
             .accessibilityIdentifier("devreply.profile.save")
         }
         .padding(16)
-        .background(Brand.lemon)
-        .overlay(alignment: .top) { Rectangle().fill(Brand.ink).frame(height: 3) }
+        .background(palette.card)
+        .overlay(alignment: .top) { Rectangle().fill(palette.outline).frame(height: 3 * line) }
         .onAppear { field = .name }
     }
 
     private func input(_ placeholder: String, text: Binding<String>, field: Field) -> some View {
         TextField(placeholder, text: text)
             .font(.text(17))
-            .foregroundStyle(Brand.ink)
-            .tint(Brand.ink)
+            .foregroundStyle(palette.ink)
+            .tint(palette.ink)
             .focused($field, equals: field)
             .padding(.horizontal, 12)
             .frame(height: 46)
-            .background(.white)
-            .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2.5))
+            .background(palette.surface)
+            .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 2.5 * line))
     }
 
     private func trimmed(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -587,11 +611,11 @@ private struct PersonaLabel: View {
             PersonaFace(persona: persona, size: 22)
             Text(persona.name)
                 .font(.text(13, .bold, relativeTo: .footnote))
-                .foregroundStyle(Brand.ink)
+                .foregroundStyle(Palette.active.ink)
             if !persona.title.isEmpty {
                 Text(persona.title)
                     .font(.text(13, .medium, relativeTo: .footnote))
-                    .foregroundStyle(Brand.muted)
+                    .foregroundStyle(Palette.active.muted)
             }
         }
         .lineLimit(1)
@@ -631,7 +655,7 @@ private struct MessageView: View {
             // e.g. "✓ Marked as resolved…": a quiet line, not a bubble.
             Text(message.plainText)
                 .font(.text(13, .bold, relativeTo: .footnote))
-                .foregroundStyle(Brand.muted)
+                .foregroundStyle(Palette.active.muted)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
@@ -668,6 +692,8 @@ private struct MessageView: View {
 }
 
 private struct PendingView: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     let item: ConversationModel.Pending
     let teamName: String
 
@@ -679,7 +705,7 @@ private struct PendingView: View {
                         .resizable()
                         .aspectRatio(preview.size.width / max(preview.size.height, 1), contentMode: .fit)
                         .frame(maxWidth: 220, maxHeight: 260)
-                        .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 3))
+                        .overlay(Rectangle().strokeBorder(Palette.active.outline, lineWidth: 3 * line))
                         .opacity(0.7)
                 } else {
                     FileChip(name: staged.name, size: staged.attachment.data.count).brutal(shadow: 3).opacity(0.7)
@@ -691,7 +717,7 @@ private struct PendingView: View {
             if let failure = item.failure {
                 Label(failure, systemImage: "exclamationmark.triangle.fill")
                     .font(.text(12, .bold, relativeTo: .caption))
-                    .foregroundStyle(Color(red: 0.7, green: 0.15, blue: 0.12))
+                    .foregroundStyle(Palette.active.error)
                     .multilineTextAlignment(.trailing)
             } else {
                 Kicker(text: item.attachments.isEmpty ? t("sending") : t("uploading"))
@@ -710,7 +736,7 @@ private struct Row<Content: View>: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            if fromUser { Spacer(minLength: 48) } else if showsAvatar { TeamAvatar(name: teamName, size: 30, fill: Brand.lemon) }
+            if fromUser { Spacer(minLength: 48) } else if showsAvatar { TeamAvatar(name: teamName, size: 30, fill: Palette.active.brand) }
             VStack(alignment: fromUser ? .trailing : .leading, spacing: 6) { content }
             if !fromUser { Spacer(minLength: 48) }
         }
@@ -723,10 +749,10 @@ private struct TextBubble: View {
     var muted = false
 
     var body: some View {
-        let theme = DevReplyTheme.current
+        let palette = Palette.active
         Text(text)
             .font(.text(17, .medium))
-            .foregroundStyle(fromUser ? theme.userBubbleText : (muted ? Brand.muted : theme.ink))
+            .foregroundStyle(fromUser ? palette.userBubbleText : (muted ? palette.muted : palette.teamBubbleText))
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
             .textSelection(.enabled)
@@ -738,39 +764,41 @@ private struct BubbleShape: ViewModifier {
     let fromUser: Bool
 
     func body(content: Content) -> some View {
-        let theme = DevReplyTheme.current
         if fromUser {
             // Like the blue bubble on devreply.com: flat colour, rounded.
-            content.background(theme.userBubble, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            content.background(Palette.active.userBubble, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         } else {
-            content.brutal(fill: .white, shadow: 3, lineWidth: 2.5, cornerRadius: 14)
+            content.brutal(fill: Palette.active.teamBubble, shadow: 3, lineWidth: 2.5, cornerRadius: 14)
         }
     }
 }
 
 /// A file in a message: document icon, name, size.
 private struct FileChip: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     let name: String
     let size: Int?
+    private var palette: Palette { Palette.active }
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "doc.fill")
                 .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(Brand.ink)
+                .foregroundStyle(palette.onBrand)
                 .frame(width: 40, height: 44)
-                .background(Brand.lemon)
-                .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2))
+                .background(palette.brand)
+                .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 2 * line))
             VStack(alignment: .leading, spacing: 2) {
                 Text(name)
                     .font(.text(15, .bold))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(palette.ink)
                     .lineLimit(2)
                     .truncationMode(.middle)
                 if let size {
                     Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
                         .font(.text(12, .medium))
-                        .foregroundStyle(Brand.muted)
+                        .foregroundStyle(palette.muted)
                 }
             }
         }
@@ -780,8 +808,11 @@ private struct FileChip: View {
 }
 
 private struct StagedThumb: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     let item: Staged
     let remove: () -> Void
+    private var palette: Palette { Palette.active }
 
     var body: some View {
         Group {
@@ -792,23 +823,23 @@ private struct StagedThumb: View {
                     Image(systemName: "doc.fill").font(.system(size: 18, weight: .bold))
                     Text(item.name).font(.text(10, .bold)).lineLimit(2).multilineTextAlignment(.center)
                 }
-                .foregroundStyle(Brand.ink)
+                .foregroundStyle(palette.onBrand)
                 .padding(4)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Brand.lemon)
+                .background(palette.brand)
             }
         }
         .frame(width: 64, height: 64)
         .clipped()
-        .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2.5))
+        .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 2.5 * line))
         .overlay(alignment: .topTrailing) {
             Button(action: remove) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .heavy))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(palette.onAccent)
                     .frame(width: 22, height: 22)
-                    .background(Brand.pink)
-                    .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2))
+                    .background(palette.accent)
+                    .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 2 * line))
             }
             .offset(x: 7, y: -7)
             .accessibilityLabel(t("remove_attachment", ["name": item.name]))
@@ -859,10 +890,13 @@ final class FileCache {
 }
 
 private struct RemoteImage: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     let url: URL
     let width: Int?
     let height: Int?
     @State private var image: UIImage?
+    private var palette: Palette { Palette.active }
 
     var body: some View {
         let ratio = CGFloat(width ?? 4) / CGFloat(max(height ?? 3, 1))
@@ -870,14 +904,14 @@ private struct RemoteImage: View {
             if let image {
                 Image(uiImage: image).resizable().aspectRatio(ratio, contentMode: .fill)
             } else {
-                Brand.grey.overlay(ProgressView().tint(Brand.ink))
+                palette.placeholder.overlay(ProgressView().tint(palette.ink))
             }
         }
         .aspectRatio(ratio, contentMode: .fit)
         .frame(maxWidth: 220, maxHeight: 260)
         .clipped()
-        .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 3))
-        .background(Rectangle().fill(Brand.ink).offset(x: 4, y: 4))
+        .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 3 * line))
+        .background(Rectangle().fill(palette.shadow).offset(x: 4, y: 4))
         .task(id: url) { image = await ImageCache.shared.image(for: url) }
     }
 }
@@ -890,7 +924,7 @@ private struct ImageViewer: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Brand.ink.ignoresSafeArea()
+            Palette.active.outline.ignoresSafeArea()
             if let loaded {
                 Image(uiImage: loaded)
                     .resizable()
@@ -902,9 +936,9 @@ private struct ImageViewer: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityLabel(t("photo"))
             } else {
-                ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
+                ProgressView().tint(Palette.active.surface).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            IconButton(systemName: "xmark", label: t("close_photo"), fill: Brand.lemon) { dismiss() }
+            IconButton(systemName: "xmark", label: t("close_photo"), fill: Palette.active.brand) { dismiss() }
                 .padding(20)
         }
         .task { loaded = await ImageCache.shared.image(for: image.url) }
@@ -948,16 +982,16 @@ private struct ReceivedNotice: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(t("notice.title"))
                     .font(.text(15, .bold))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(Palette.active.ink)
                 Text(allowText + " " + (email.map { t("notice.email", ["email": $0]) } ?? t("notice.here")))
                     .font(.text(14, .medium))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(Palette.active.ink)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
         .padding(12)
-        .brutal(fill: .white, shadow: 3)
+        .brutal(fill: Palette.active.notice, shadow: 3)
         .padding(.top, 4)
         .padding(.trailing, 4)
         .accessibilityElement(children: .combine)
@@ -967,34 +1001,37 @@ private struct ReceivedNotice: View {
 
 /// Right after the first message of a request, if we don't have their email: optional, one tap to skip.
 private struct EmailAskCard: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     let onDone: () -> Void
     @State private var email = ""
     @State private var saving = false
     @State private var error: String?
     @FocusState private var focused: Bool
+    private var palette: Palette { Palette.active }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(t("email_ask.title"))
                     .font(.text(15, .bold))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(palette.onCard)
                 Spacer()
                 Button(t("no_thanks"), action: onDone)
                     .font(.text(14, .bold))
-                    .foregroundStyle(Brand.muted)
+                    .foregroundStyle(palette.mutedOnCard)
                     .accessibilityIdentifier("devreply.emailask.skip")
             }
             Text(t("email_ask.text"))
                 .font(.text(13, .medium))
-                .foregroundStyle(Brand.ink)
+                .foregroundStyle(palette.onCard)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 // Verbatim: as a string key, SwiftUI would render the address as a blue link.
                 TextField(t("email_ask.placeholder"), text: $email, prompt: Text(verbatim: "you@example.com"))
                     .font(.text(17))
-                    .foregroundStyle(Brand.ink)
-                    .tint(Brand.ink)
+                    .foregroundStyle(palette.ink)
+                    .tint(palette.ink)
                     .textContentType(.emailAddress)
                     .keyboardType(.emailAddress)
                     .textInputAutocapitalization(.never)
@@ -1004,28 +1041,28 @@ private struct EmailAskCard: View {
                     .focused($focused)
                     .padding(.horizontal, 12)
                     .frame(height: 44)
-                    .background(.white)
-                    .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2.5))
+                    .background(palette.surface)
+                    .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 2.5 * line))
                     .accessibilityIdentifier("devreply.emailask.field")
                 Button(action: save) {
                     Text(saving ? "…" : t("save"))
                         .font(.text(15, .bold))
-                        .foregroundStyle(Brand.ink)
+                        .foregroundStyle(palette.onAccent)
                         .padding(.horizontal, 16)
                         .frame(height: 44)
                 }
-                .buttonStyle(BrutalPressStyle(fill: Brand.pink, shadow: 3))
+                .buttonStyle(BrutalPressStyle(fill: palette.accent, shadow: 3))
                 .disabled(saving || trimmed.isEmpty)
                 .opacity(trimmed.isEmpty ? 0.5 : 1)
                 .accessibilityIdentifier("devreply.emailask.save")
             }
             if let error {
-                Text(error).font(.text(13, .bold)).foregroundStyle(Color(red: 0.7, green: 0.15, blue: 0.12))
+                Text(error).font(.text(13, .bold)).foregroundStyle(palette.error)
             }
         }
         .padding(12)
-        .background(Brand.lemon)
-        .overlay(alignment: .top) { Rectangle().fill(Brand.ink).frame(height: 3) }
+        .background(palette.card)
+        .overlay(alignment: .top) { Rectangle().fill(palette.outline).frame(height: 3 * line) }
     }
 
     private var trimmed: String { email.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1053,27 +1090,30 @@ private struct EmailAskCard: View {
 /// After the first message: "Turn on" (then Apple's prompt), or "Open Settings" if they said no before.
 /// Never forced; "Not now" hides it for a few days.
 private struct PushAskCard: View {
+    /// Outline and divider widths × the theme's `outlineWidth`.
+    @Environment(\.devReplyLine) private var line
     let state: PushManager.AskState
     let teamName: String
     @State private var asking = false
+    private var palette: Palette { Palette.active }
 
     var body: some View {
         let who = teamName.isEmpty ? t("team") : teamName
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: state == .firstAsk ? "bell.badge.fill" : "bell.slash.fill")
                 .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(Brand.ink)
+                .foregroundStyle(palette.ink)
                 .frame(width: 40, height: 40)
-                .background(.white)
-                .overlay(Rectangle().strokeBorder(Brand.ink, lineWidth: 2))
+                .background(palette.surface)
+                .overlay(Rectangle().strokeBorder(palette.outline, lineWidth: 2 * line))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 8) {
                 Text(state == .firstAsk ? t("push.title") : t("push.off_title"))
                     .font(.text(15, .bold))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(palette.onCard)
                 Text(state == .firstAsk ? t("push.text", ["team": who]) : t("push.off_text", ["team": who]))
                     .font(.text(14, .medium))
-                    .foregroundStyle(Brand.ink)
+                    .foregroundStyle(palette.onCard)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {
                     Button {
@@ -1089,15 +1129,15 @@ private struct PushAskCard: View {
                     } label: {
                         Text(state == .firstAsk ? (asking ? "…" : t("push.turn_on")) : t("push.open_settings"))
                             .font(.text(15, .bold))
-                            .foregroundStyle(Brand.ink)
+                            .foregroundStyle(palette.onAccent)
                             .padding(.horizontal, 16)
                             .frame(height: 40)
                     }
-                    .buttonStyle(BrutalPressStyle(fill: Brand.pink, shadow: 3))
+                    .buttonStyle(BrutalPressStyle(fill: palette.accent, shadow: 3))
                     .accessibilityIdentifier("devreply.push.enable")
                     Button(t("push.not_now")) { withAnimation { PushManager.shared.notNow() } }
                         .font(.text(14, .bold))
-                        .foregroundStyle(Brand.muted)
+                        .foregroundStyle(palette.mutedOnCard)
                         .frame(height: 40)
                         .accessibilityIdentifier("devreply.push.notnow")
                 }
@@ -1105,7 +1145,7 @@ private struct PushAskCard: View {
             Spacer(minLength: 0)
         }
         .padding(12)
-        .background(Brand.lemon)
-        .overlay(alignment: .top) { Rectangle().fill(Brand.ink).frame(height: 3) }
+        .background(palette.card)
+        .overlay(alignment: .top) { Rectangle().fill(palette.outline).frame(height: 3 * line) }
     }
 }
