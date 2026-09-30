@@ -148,14 +148,14 @@ private struct BubbleView: View {
             Image("devreply-mark", bundle: .devReply)
                 .resizable()
                 .scaledToFit()
-                .frame(width: 32, height: 32)
-                .offset(y: 2)
+                .frame(width: 40, height: 40)
                 .frame(width: UnreadBubble.size, height: UnreadBubble.size)
         }
         .buttonStyle(BubblePressStyle(line: line))
         .overlay(alignment: .topTrailing) { badge.offset(x: 6, y: -6) }
         .offset(x: max(dragX, 0))
-        .opacity(1 - min(max(dragX, 0) / 80, 0.7))
+        // Explicit types: older Swift compilers (Xcode 26.2) find `/` ambiguous here.
+        .opacity(Double(1 - min(max(dragX, CGFloat(0)) / CGFloat(80), CGFloat(0.7))))
         .scaleEffect(model.shown ? 1 : 0.2)
         .opacity(model.shown ? 1 : 0)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -212,16 +212,17 @@ private struct BubbleView: View {
     }
 }
 
-/// Lemon (`primary`) circle, ink outline, hard shadow; presses down into the shadow like the brand's buttons.
+/// The DevReply star on a black circle with a pink hard shadow (spec 11: the star always sits on black), like
+/// devreply.com's launcher; presses down into the shadow like the brand's buttons. Not themed: a brand touch.
 private struct BubblePressStyle: ButtonStyle {
     let line: CGFloat
     func makeBody(configuration: Configuration) -> some View {
         let pressed = configuration.isPressed
-        let palette = Palette.active
+        let ink = Color(hex: 0x111111)
         configuration.label
-            .background(Circle().fill(palette.brand))
-            .overlay(Circle().strokeBorder(palette.outline, lineWidth: 3 * line))
-            .background(Circle().fill(palette.shadow).offset(x: pressed ? 1 : 4, y: pressed ? 1 : 4))
+            .background(Circle().fill(ink))
+            .overlay(Circle().strokeBorder(ink, lineWidth: 3))
+            .background(Circle().fill(Color(hex: 0xFF5FA2)).offset(x: pressed ? 1 : 4, y: pressed ? 1 : 4))
             .offset(x: pressed ? 3 : 0, y: pressed ? 3 : 0)
             .animation(.snappy(duration: 0.12), value: pressed)
     }

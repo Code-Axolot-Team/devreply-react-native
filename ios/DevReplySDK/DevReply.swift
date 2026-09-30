@@ -11,7 +11,8 @@ import UserNotifications
 @MainActor
 public enum DevReply {
     /// The production API. Override only for local development.
-    public static let defaultAPIURL = URL(string: "https://api.devreply.com")!
+    /// Nonisolated so it can be a default argument (Swift 6 language mode).
+    nonisolated public static let defaultAPIURL = URL(string: "https://api.devreply.com")!
 
     /// Call once at launch with the app's public key. It is safe to ship inside the app.
     public static func configure(_ publicKey: String, apiURL: URL = defaultAPIURL) {
@@ -229,6 +230,8 @@ public enum DevReply {
     ///   the user taps a start button). Never sent on its own: the user sees it and can edit it.
     /// - `attributes`: context for the team, sent with the conversation started from this presentation
     ///   (only that one, not the user's profile). Text, number or true/false; up to 20.
+    /// - `askName`: false skips "Before we start" (the name form) while this messenger is open, e.g. from a
+    ///   failed purchase, where one tap to the message matters more than a name. The team sees the user unnamed.
     ///
     /// Returns false, and shows nothing, when DevReply isn't configured or the chat is switched off
     /// (`isAvailable`); true when the messenger opened.
@@ -238,10 +241,11 @@ public enum DevReply {
     /// ```
     @discardableResult
     public static func present(
-        category: DevReplyCategory? = nil, message: String? = nil, attributes: [String: DevReplyAttribute] = [:]
+        category: DevReplyCategory? = nil, message: String? = nil, attributes: [String: DevReplyAttribute] = [:],
+        askName: Bool = true
     ) -> Bool {
         guard Messenger.shared.isAvailable, topViewController() != nil else { return false }
-        Messenger.shared.setPresentation(message: message, attributes: attributes)
+        Messenger.shared.setPresentation(message: message, attributes: attributes, askName: askName)
         return presentMessenger(MessengerView(startCategory: category))
     }
 

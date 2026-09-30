@@ -14,6 +14,8 @@ export type DevReplyPresentOptions = {
   message?: string
   /** Shown to the team with that conversation only (e.g. `{ source: 'paywall', rc_error_code: '…' }`). */
   attributes?: Record<string, string | number | boolean>
+  /** `false` skips "Before we start" (the name form) while this chat is open, e.g. from a failed purchase. */
+  askName?: boolean
 }
 
 /**

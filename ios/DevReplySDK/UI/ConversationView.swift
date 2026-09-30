@@ -64,6 +64,8 @@ final class ConversationModel {
         let id = UUID()
         let text: String
         let attachments: [Staged]
+        /// A tap on a button of a team question: the label goes as the text, this as `answer`.
+        var answer: ButtonAnswer? = nil
         var failure: String?
     }
 
@@ -84,8 +86,48 @@ final class ConversationModel {
             return
         }
         conversation = page.conversation
-        if page.messages != messages { messages = page.messages }
+        // A live message that came in while this load was on its way stays (the next load has it too).
+        let loaded = Set(page.messages.map(\.id))
+        let newer = messages.filter { !loaded.contains($0.id) && $0.createdAt > (page.messages.last?.createdAt ?? .distantPast) }
+        let fresh = page.messages + newer
+        if fresh != messages { messages = fresh }
+        if let last = page.messages.last { Messenger.shared.saw(last.id) }
         Messenger.shared.upsert(page.conversation)
+    }
+
+    /// A message from the live socket (or a send's response): dedupe by id, replace a copy already shown,
+    /// otherwise insert in time order.
+    func receive(_ message: Message) {
+        if let index = messages.firstIndex(where: { $0.id == message.id }) {
+            if messages[index] != message { messages[index] = message }
+            return
+        }
+        let index = messages.lastIndex(where: { $0.createdAt <= message.createdAt }).map { $0 + 1 } ?? 0
+        messages.insert(message, at: index)
+    }
+
+    /// Button questions answered: question id → option id. From the thread (a user message that carries the
+    /// answer, or the question's own block) and from taps in this session (at once, before the server has it).
+    var answers: [UUID: String] {
+        var out = tapped
+        for message in messages {
+            if message.isFromUser, let answer = message.answer { out[answer.messageId] = answer.optionId }
+            for case .buttons(_, _, _, let answered?) in message.blocks { out[message.id] = answered }
+        }
+        return out
+    }
+
+    /// Answers tapped here; the chosen button stays highlighted while it sends and after.
+    private(set) var tapped: [UUID: String] = [:]
+
+    /// One answer per question: a tap on an answered question does nothing. The composer stays usable.
+    func answer(_ question: Message, with option: ButtonOption) {
+        guard answers[question.id] == nil else { return }
+        tapped[question.id] = option.id
+        let item = Pending(text: option.label, attachments: [], answer: ButtonAnswer(messageId: question.id, optionId: option.id))
+        pending.append(item)
+        sentCount += 1
+        enqueue(item)
     }
 
     func send(_ raw: String, attachments: [Staged]) {
@@ -124,10 +166,13 @@ final class ConversationModel {
             }
             let attachmentIDs = ids
             if let id = conversation?.id {
+                let answer = item.answer
                 let message = try await Messenger.shared.authorized {
-                    try await $0.sendMessage(token: $1, conversation: id, text: item.text, attachments: attachmentIDs)
+                    try await $0.sendMessage(token: $1, conversation: id, text: item.text, attachments: attachmentIDs, answer: answer)
                 }
-                messages.append(message)
+                // The socket may have brought it already.
+                receive(message)
+                Messenger.shared.saw(message.id)
                 Messenger.shared.messageSent(conversationID: id)
             } else {
                 // What the app passed to `present(attributes:)`: goes with this presentation's first new conversation.
@@ -138,11 +183,17 @@ final class ConversationModel {
                     )
                 }
                 conversation = started.conversation
-                messages.append(started.message)
+                receive(started.message)
+                Messenger.shared.saw(started.message.id)
                 Messenger.shared.upsert(started.conversation)
                 Messenger.shared.conversationStarted(started.conversation.id, category: category)
             }
             pending.removeAll { $0.id == item.id }
+        } catch DevReplyError.server(409) where item.answer != nil {
+            // Already answered (another device, or a tap that got there first): the thread says which.
+            pending.removeAll { $0.id == item.id }
+            if let question = item.answer?.messageId { tapped[question] = nil }
+            await load()
         } catch {
             let reason = switch error as? DevReplyError {
             case .unavailable: t("failed.attachments")
@@ -202,26 +253,7 @@ struct ConversationView: View {
             if items.isEmpty {
                 ScrollView { intro }
             } else {
-                // Inverted list: the scroll view is flipped and so is every row, so the bottom is the
-                // natural start. New messages and time labels always appear at the bottom and push the
-                // rest up; nothing ever scrolls in code.
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        Color.clear.frame(height: 4)
-                        ForEach(Array(items.reversed().enumerated()), id: \.element.id) { position, item in
-                            row(item)
-                                .flippedVertically()
-                                // VoiceOver reads oldest first, like the screen.
-                                .accessibilitySortPriority(Double(position))
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-                    .animation(.snappy(duration: 0.25), value: items.count)
-                }
-                .flippedVertically()
-                .scrollIndicators(.hidden)
-                .withoutScrollEdgeEffect()
+                messageList
             }
         }
         // Drag down to hide the keyboard, like any chat. While it's up, the sheet itself doesn't swipe
@@ -272,9 +304,11 @@ struct ConversationView: View {
         .sensoryFeedback(.impact(weight: .light), trigger: model.sentCount)
         .task(id: model.conversation?.id) {
             await messenger.loadProfileIfNeeded()
+            await model.load()
+            // The 3 s poll: only while the live socket is down (spec 05, "Live updates").
             while !Task.isCancelled {
-                await model.load()
                 try? await Task.sleep(for: .seconds(3))
+                if !messenger.isLive, !Task.isCancelled { await model.load() }
             }
         }
         .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: 4, matching: .images)
@@ -295,12 +329,55 @@ struct ConversationView: View {
             }
             if model.conversation == nil && !messenger.needsName { composerFocused = true }
             messenger.visibleConversation = model.conversation?.id
+            messenger.visibleModel = model
         }
-        .onDisappear { messenger.visibleConversation = nil }
+        .onDisappear {
+            messenger.visibleConversation = nil
+            if messenger.visibleModel === model { messenger.visibleModel = nil }
+        }
+        // The server gave this install back its earlier user (`login`, spec 03): reload what's on screen.
+        .onChange(of: messenger.restores) { _, _ in Task { await model.load() } }
         .onChange(of: model.conversation?.id) { _, id in messenger.visibleConversation = id }
     }
 
     // MARK: Rows
+
+    /// The thread, oldest at the top, newest at the bottom: a plain scroll view that opens at its bottom and
+    /// follows new messages. Not an upside-down (flipped) list: a page sheet decides whether a drag belongs to
+    /// the sheet or to the scroll view from the scroll view's top edge, and in a flipped list that edge is the
+    /// newest message, so pushing the history up (finger up at the bottom) pulled the whole sheet down.
+    private var messageList: some View {
+        GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(items) { row($0) }
+                        Color.clear.frame(height: 4).id(Self.bottomID)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    // A short thread sits at the bottom, by the composer, like a long one.
+                    .frame(minHeight: viewport.size.height, alignment: .bottom)
+                    .animation(.snappy(duration: 0.25), value: items.count)
+                }
+                .defaultScrollAnchor(.bottom)
+                .keepsBottomOnResize()
+                .scrollIndicators(.hidden)
+                .withoutScrollEdgeEffect()
+                .onAppear { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                // A new message (theirs, ours, a send in progress): the newest is in view.
+                .onChange(of: items.last?.id) { _, _ in
+                    withAnimation(.snappy(duration: 0.25)) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                }
+                // The keyboard came up or went down: stay at the newest message (iOS 18+ does it on its own).
+                .onChange(of: viewport.size.height) { old, new in
+                    if new < old { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                }
+            }
+        }
+    }
+
+    private static let bottomID = "bottom"
 
     /// Everything the thread shows, oldest first: time labels, messages, sends in progress.
     private enum ChatItem: Identifiable {
@@ -357,11 +434,11 @@ struct ConversationView: View {
         case .time(let date, _):
             TimeLabel(date: date)
         case .message(let message):
-            MessageView(message: message, teamName: config.teamName, onOpenImage: { image in
+            MessageView(message: message, teamName: config.teamName, answered: model.answers[message.id], onOpenImage: { image in
                 // A full-screen cover hides the messenger for a moment: that isn't it closing.
                 messenger.isCovered = true
                 viewing = image
-            }, onOpenFile: open)
+            }, onOpenFile: open, onAnswer: { model.answer(message, with: $0) })
         case .pending(let pending):
             PendingView(item: pending, teamName: config.teamName)
                 .onTapGesture { if pending.failure != nil { model.retry(pending) } }
@@ -647,8 +724,11 @@ struct RemoteFile: Equatable {
 private struct MessageView: View {
     let message: Message
     let teamName: String
+    /// For a button question: the chosen option's id, once answered.
+    let answered: String?
     let onOpenImage: (ViewedImage) -> Void
     let onOpenFile: (RemoteFile) -> Void
+    let onAnswer: (ButtonOption) -> Void
 
     var body: some View {
         if message.author == .system {
@@ -681,6 +761,20 @@ private struct MessageView: View {
                     }
                     .buttonStyle(BrutalPressStyle(shadow: 3))
                     .accessibilityLabel(t("file_named", ["name": name]))
+                case .markdown(let blocks, let plain):
+                    // Team and agent replies; the user's own messages stay plain text.
+                    if message.isFromUser {
+                        TextBubble(text: plain, fromUser: true)
+                    } else {
+                        MarkdownBubble(blocks: blocks)
+                    }
+                case .buttons(let question, let plain, let options, _):
+                    if message.isFromUser {
+                        TextBubble(text: plain, fromUser: true)
+                    } else {
+                        MarkdownBubble(blocks: question)
+                        OptionButtons(options: options, chosen: answered, onChoose: onAnswer)
+                    }
                 case .localized:
                     TextBubble(text: block.plainText, fromUser: message.isFromUser)
                 case .unsupported(let fallback):
@@ -688,6 +782,47 @@ private struct MessageView: View {
                 }
             }
         }
+    }
+}
+
+/// The answers of a team question (spec 05, 0.5.0), under its bubble: outlined buttons with a hard shadow.
+/// Once answered, the chosen one stays filled with a check and the others go quiet; none can be tapped again.
+private struct OptionButtons: View {
+    let options: [ButtonOption]
+    let chosen: String?
+    let onChoose: (ButtonOption) -> Void
+    private var palette: Palette { Palette.active }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(options) { option in
+                let isChosen = option.id == chosen
+                Button { onChoose(option) } label: {
+                    HStack(spacing: 8) {
+                        if isChosen {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 14, weight: .black))
+                                .accessibilityHidden(true)
+                        }
+                        Text(option.label)
+                            .font(.text(16, .bold))
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(isChosen ? palette.onAccent : palette.ink)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
+                    .frame(minHeight: 44)
+                }
+                .buttonStyle(BrutalPressStyle(fill: isChosen ? palette.accent : nil, shadow: chosen == nil || isChosen ? 3 : 0))
+                .opacity(chosen == nil || isChosen ? 1 : 0.4)
+                .disabled(chosen != nil)
+                .accessibilityIdentifier("devreply.option.\(option.id)")
+                .accessibilityAddTraits(isChosen ? .isSelected : [])
+            }
+        }
+        .padding(.top, 4)
+        .animation(.snappy(duration: 0.2), value: chosen)
     }
 }
 
@@ -760,7 +895,7 @@ private struct TextBubble: View {
     }
 }
 
-private struct BubbleShape: ViewModifier {
+struct BubbleShape: ViewModifier {
     let fromUser: Bool
 
     func body(content: Content) -> some View {
@@ -946,8 +1081,8 @@ private struct ImageViewer: View {
 }
 
 private extension View {
-    /// iOS 26 blurs content under bars at a scroll view's edges. On a flipped scroll view that blur
-    /// lands on the messages, so the inverted list turns it off. Xcode 16 hosts don't have the API.
+    /// iOS 26 blurs content under bars at a scroll view's edges. The chat's bar and composer are solid, so
+    /// the blur would only smudge the messages next to them. Xcode 16 hosts don't have the API.
     @ViewBuilder func withoutScrollEdgeEffect() -> some View {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
@@ -960,9 +1095,14 @@ private extension View {
         #endif
     }
 
-    /// Upside down. Applied to a scroll view and again to each of its rows, it makes an inverted list.
-    func flippedVertically() -> some View {
-        scaleEffect(x: 1, y: -1, anchor: .center)
+    /// When the scroll view or its content changes size (the keyboard, a longer message), the bottom stays
+    /// in place. iOS 18+; on 17 the list scrolls to the newest message in code.
+    @ViewBuilder func keepsBottomOnResize() -> some View {
+        if #available(iOS 18.0, *) {
+            defaultScrollAnchor(.bottom, for: .sizeChanges)
+        } else {
+            self
+        }
     }
 }
 

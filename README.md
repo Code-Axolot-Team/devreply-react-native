@@ -94,7 +94,7 @@ DevReply.setTheme({ dark: { primary: '#7A3CFF', background: '#101018', ink: '#F2
 DevReply.setTheme({ dark: null })                                                          // dark off again
 ```
 
-**Languages:** the chat follows the device's language (15 languages); `DevReply.setLocale('es')` if your app has its
+**Languages:** the chat follows the device's language (34 languages, Hebrew and Arabic right to left); `DevReply.setLocale('es')` if your app has its
 own language setting (`null` follows the device).
 
 **Who replied:** each reply shows the teammate's name, title and photo (their persona in the dashboard), and the
@@ -105,7 +105,19 @@ chat's header shows your app icon. Nothing to set up in the app.
 and set `yourapp://devreply` as the deep link in the dashboard (the app → Settings). The package listens for these
 links itself after `configure`; with expo-router add `app/+native-intent.tsx`:
 `export function redirectSystemPath({ path }) { return path.includes('devreply=') ? '/' : path }`. If your router
-swallows links first, pass them on with `DevReply.handle(url)`.
+swallows links first, pass them on with `DevReply.handle(url)`. Bare React Native, two checks, or links that arrive
+while the app is running are lost:
+
+- **iOS:** if your AppDelegate handles URLs itself (Google Sign-In, Facebook…), end with React Native's handler:
+
+  ```swift
+  func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
+    if GIDSignIn.sharedInstance.handle(url) { return true } // your own handlers first
+    return RCTLinkingManager.application(app, open: url, options: options)
+  }
+  ```
+- **Android:** keep `android:launchMode="singleTask"` on `MainActivity` in `AndroidManifest.xml` (the React Native
+  default); with `standard`, the link starts a second copy of the app.
 
 **Push notifications**, like Intercom: your app keeps its own push setup and passes DevReply the token, taps and,
 on Android, DevReply's messages. DevReply never takes over your notification handling. With

@@ -58,6 +58,8 @@ struct MessengerView: View {
         .environment(\.devReplyLine, Palette.lineScale(Palette.followsAppearance ? colorScheme : .light))
         // Dates, relative times and system controls in the chat's language (DevReply.setLocale).
         .environment(\.locale, L10n.shared.locale)
+        // Hebrew and Arabic lay out from the right, whatever the app's own languages are.
+        .environment(\.layoutDirection, L10n.shared.isRTL ? .rightToLeft : .leftToRight)
     }
 }
 

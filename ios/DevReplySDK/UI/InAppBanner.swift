@@ -33,7 +33,9 @@ final class InAppBanner {
         } onDismiss: { [weak self] in
             self?.hide(animated: true)
         }
-        let host = UIHostingController(rootView: view)
+        let host = UIHostingController(
+            rootView: view.environment(\.layoutDirection, L10n.shared.isRTL ? .rightToLeft : .leftToRight)
+        )
         host.view.backgroundColor = .clear
         window.rootViewController = host
         window.isHidden = false

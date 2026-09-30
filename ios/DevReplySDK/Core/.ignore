@@ -1,0 +1,2 @@
+# Kept out of agents' searches (ripgrep reads .ignore; git doesn't): translations, changed only through sdk/conformance/strings/strings.py (CLAUDE.md, "Translations").
+Strings.swift

@@ -48,8 +48,8 @@ final class L10n {
 
     // MARK: Resolving (the same rules in every SDK: sdk/conformance/strings/locale-vectors.json)
 
-    /// For each preferred tag in order: an exact match, then `pt*` → `pt-BR` and `zh*` → `zh-Hans`, then
-    /// the language alone. Nothing matches: `en`.
+    /// For each preferred tag in order: an exact match, then the special cases (`specialCase`), then the
+    /// language alone. Nothing matches: `en`.
     nonisolated static func resolve(_ preferred: [String]) -> (language: String, tag: String) {
         let languages = DevReplyStrings.languages
         for raw in preferred {
@@ -58,15 +58,40 @@ final class L10n {
             if let exact = languages.first(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) {
                 return (exact, tag)
             }
+            let special = specialCase(tag.lowercased())
+            if let match = languages.first(where: { $0.lowercased() == special }) {
+                return (match, tag)
+            }
             let base = tag.split(separator: "-").first.map { String($0).lowercased() } ?? ""
-            if base == "pt" { return ("pt-BR", tag) }
-            if base == "zh" { return ("zh-Hans", tag) }
             if let match = languages.first(where: { $0.lowercased() == base }) {
                 return (match, tag)
             }
         }
         return ("en", "en")
     }
+
+    /// The cases a plain language match gets wrong: Chinese by script, Portuguese by country, and the old
+    /// codes some systems still send (iw, in, no). Lowercase in and out; "" when none applies.
+    nonisolated static func specialCase(_ tag: String) -> String {
+        let parts = tag.split(separator: "-").map(String.init)
+        guard let base = parts.first else { return "" }
+        let rest = parts.dropFirst()
+        let region = rest.first { $0.count == 2 || ($0.count == 3 && $0.allSatisfy(\.isNumber)) }
+        switch base {
+        case "zh":
+            if rest.contains("hant") { return "zh-hant" }
+            if rest.contains("hans") { return "zh-hans" }
+            return ["tw", "hk", "mo"].contains(region ?? "") ? "zh-hant" : "zh-hans"
+        case "pt": return region == nil || region == "br" ? "pt-br" : "pt-pt"
+        case "iw": return "he"
+        case "in": return "id"
+        case "no", "nn": return "nb"
+        default: return ""
+        }
+    }
+
+    /// The chat's language is written right to left (Hebrew, Arabic): the chat lays out from the right.
+    var isRTL: Bool { DevReplyStrings.rtl.contains(language) }
 
     // MARK: Texts
 

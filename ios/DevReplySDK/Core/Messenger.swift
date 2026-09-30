@@ -19,6 +19,88 @@ final class Messenger {
     var visibleConversation: UUID?
     private var watching: Task<Void, Never>?
     private var foregroundObserver: NSObjectProtocol?
+    private var backgroundObserver: NSObjectProtocol?
+
+    // MARK: Live updates (spec 05, 0.5.0)
+
+    /// The socket is up (`ready` came): the open chat's 3 s poll pauses.
+    private(set) var isLive = false
+    /// The conversation on screen, for live messages (set by ConversationView).
+    @ObservationIgnored weak var visibleModel: ConversationModel?
+    /// The last message id this install has seen (ids are time-ordered UUID v7): the socket resumes after it.
+    @ObservationIgnored private(set) var lastSeenMessage: UUID?
+    /// Live messages already applied to the list (a backlog can repeat one).
+    @ObservationIgnored private var appliedLive: [UUID] = []
+
+    @ObservationIgnored private(set) lazy var live: LiveConnection = {
+        let connection = LiveConnection(environment: .standard(
+            ticket: { try await Messenger.shared.liveTicket() },
+            session: { Messenger.shared.client?.session ?? .shared }
+        ))
+        connection.lastSeen = { Messenger.shared.lastSeenMessage }
+        connection.onEvent = { Messenger.shared.handleLive($0) }
+        connection.onStateChange = { Messenger.shared.liveStateChanged($0) }
+        return connection
+    }()
+
+    /// Tests: the live connection with a fake socket and clock.
+    func useLiveForTesting(_ connection: LiveConnection) {
+        connection.lastSeen = { [weak self] in self?.lastSeenMessage }
+        connection.onEvent = { [weak self] in self?.handleLive($0) }
+        connection.onStateChange = { [weak self] in self?.liveStateChanged($0) }
+        live = connection
+    }
+
+    private func liveTicket() async throws -> URL {
+        do {
+            return try await authorized { try await $0.liveTicket(token: $1) }.url
+        } catch DevReplyError.unavailable, DevReplyError.notFound, DevReplyError.invalid {
+            throw LiveUnavailable()
+        } catch is DecodingError {
+            // Not a live-capable server (no `url`): poll.
+            throw LiveUnavailable()
+        }
+    }
+
+    private func liveStateChanged(_ state: LiveConnection.State) {
+        let wasLive = isLive
+        isLive = state == .live
+        // Just connected: whatever came between the thread's last load and `ready` (a first connection has
+        // no `after` to resume from).
+        if isLive, !wasLive, let model = visibleModel { Task { await model.load() } }
+    }
+
+    /// Only while the messenger is open and the app is in the foreground.
+    private func startLive() {
+        guard client != nil, isPresented else { return }
+        live.start()
+    }
+
+    /// A message id this install has seen (a live event, a thread load, a send).
+    func saw(_ id: UUID) {
+        if let last = lastSeenMessage, last.uuidString.lowercased() >= id.uuidString.lowercased() { return }
+        lastSeenMessage = id
+    }
+
+    func handleLive(_ event: LiveEvent) {
+        guard case .message(let conversationID, let message) = event else { return }
+        saw(message.id)
+        let onScreen = visibleModel?.conversation?.id == conversationID
+        if onScreen, let model = visibleModel {
+            model.receive(message)
+            if !message.isFromUser { live.send(LiveEvent.readFrame(conversationID)) }
+        }
+        guard !appliedLive.contains(message.id) else { return }
+        appliedLive.append(message.id)
+        if appliedLive.count > 200 { appliedLive.removeFirst(appliedLive.count - 200) }
+        if let known = conversations.first(where: { $0.id == conversationID }) {
+            let updated = known.receiving(message, onScreen: onScreen)
+            if updated != known { upsert(updated) }
+        } else {
+            // A conversation this device doesn't list yet (started on another device): the list from the server.
+            Task { await refresh() }
+        }
+    }
 
     var unreadCount: Int { conversations.reduce(0) { $0 + $1.unread } }
 
@@ -30,32 +112,38 @@ final class Messenger {
         configured && config.enabled
     }
 
-    // MARK: This presentation (`DevReply.present(category:message:attributes:)`)
+    // MARK: This presentation (`DevReply.present(category:message:attributes:askName:)`)
 
     /// Prefills the composer of a new conversation started in this presentation, until one starts.
     @ObservationIgnored private(set) var presentationMessage: String?
     /// Goes as `context` with this presentation's first new conversation.
     @ObservationIgnored private(set) var presentationContext: [String: DevReplyAttribute] = [:]
+    /// `present(askName: false)`: no name form while this presentation is open (the user can still add an email).
+    private(set) var presentationSkipsName = false
     /// A full-screen cover (the photo viewer) is over the messenger: its disappearing isn't a close.
     @ObservationIgnored var isCovered = false
 
-    func setPresentation(message: String?, attributes: [String: DevReplyAttribute]) {
+    func setPresentation(message: String?, attributes: [String: DevReplyAttribute], askName: Bool = true) {
         let text = message?.trimmingCharacters(in: .whitespacesAndNewlines)
         presentationMessage = (text?.isEmpty ?? true) ? nil : message
         presentationContext = DevReplyAttribute.context(attributes)
+        presentationSkipsName = !askName
     }
 
     func messengerAppeared() {
         guard !isPresented else { return }
         isPresented = true
+        startLive()
         Events.emit(.messengerOpened)
     }
 
     func messengerDisappeared() {
         guard isPresented, !isCovered else { return }
         isPresented = false
+        live.stop()
         presentationMessage = nil
         presentationContext = [:]
+        presentationSkipsName = false
         Events.emit(.messengerClosed)
     }
 
@@ -113,6 +201,9 @@ final class Messenger {
             if let id = hostUserID, let current = Keychain.userID(for: account), current != id { forgetInstall() }
         }
         registering = nil
+        live.stop()
+        lastSeenMessage = nil
+        appliedLive = []
         keyRefusals = 0
         keyRetryAt = nil
         conversations = []
@@ -139,6 +230,12 @@ final class Messenger {
         }
     }
 
+    /// Tests: the API through `client` (a stubbed session), without push, the unread bubble or polling.
+    func useForTesting(publicKey: String, client: APIClient) {
+        self.publicKey = publicKey
+        self.client = client
+    }
+
     private var keychainAccount: String? {
         guard let publicKey, let client else { return nil }
         return "\(client.baseURL.host() ?? "api")|\(publicKey)"
@@ -153,9 +250,10 @@ final class Messenger {
         if let registering { return try await registering.value }
         if let at = keyRetryAt, Date() < at { throw DevReplyError.invalidPublicKey }
         let device = DeviceInfo.current
+        let deviceKey = Keychain.deviceKey(for: account)
         let task = Task { () throws -> String in
             do {
-                let install = try await client.registerInstall(publicKey: publicKey, device: device)
+                let install = try await client.registerInstall(publicKey: publicKey, device: device, deviceKey: deviceKey)
                 Keychain.setToken(install.token, for: account)
                 UserDefaults.standard.set(device.json["locale"], forKey: "devreply.locale.\(account)")
                 keyRefusals = 0
@@ -233,7 +331,9 @@ final class Messenger {
     }
 
     /// A name is required before the first message (spec 05), unless the app supplied one.
-    var needsName: Bool { (profile?.name ?? "").trimmingCharacters(in: .whitespaces).isEmpty }
+    var needsName: Bool {
+        !presentationSkipsName && (profile?.name ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+    }
 
     /// Saves what the user typed (or what the host app passed to `DevReply.setUser`).
     func saveProfile(name: String?, email: String?) async throws {
@@ -263,23 +363,35 @@ final class Messenger {
     /// The app's id for the signed-in user (`DevReply.login`).
     private var hostUserID: String?
 
-    func login(userID: String) {
+    /// Returns the task that sends the id (tests wait for it).
+    @discardableResult
+    func login(userID: String) -> Task<Void, Never>? {
         let id = userID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty else { return }
+        guard !id.isEmpty else { return nil }
         // Another person on this device: they start from a new, empty install.
         if let account = keychainAccount, let current = Keychain.userID(for: account), current != id { logout() }
         hostUserID = id
-        guard client != nil else { return }
-        Task { await sendUserID() }
+        guard client != nil else { return nil }
+        return Task { await sendUserID() }
     }
+
+    /// Counts the times the server gave this install back its earlier user (`restored`): open screens
+    /// reload when it changes.
+    private(set) var restores = 0
 
     /// Labels this install's user with the app's id. The server refuses another id for the same user (409):
     /// then this install belonged to someone else, so start a new one.
     private func sendUserID(retry: Bool = true) async {
         guard let id = hostUserID, let account = keychainAccount else { return }
         do {
-            profile = try await authorized { try await $0.updateProfile(token: $1, name: nil, email: nil, userID: id) }
+            let updated = try await authorized { try await $0.updateProfile(token: $1, name: nil, email: nil, userID: id) }
+            profile = updated
             Keychain.setUserID(id, for: account)
+            // Back on the same device, same account (spec 03): the old conversations are this install's again.
+            if updated.restored == true {
+                restores += 1
+                await refresh()
+            }
         } catch DevReplyError.server(409) where retry {
             logout(keepUserID: true)
             await sendUserID(retry: false)
@@ -366,6 +478,9 @@ final class Messenger {
             Keychain.deleteUserID(for: account)
         }
         registering = nil
+        live.stop()
+        lastSeenMessage = nil
+        appliedLive = []
         hostUserID = nil
         hostUser = nil
         pendingAttributes = [:]
@@ -414,9 +529,19 @@ final class Messenger {
                 forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
             ) { _ in
                 Task { @MainActor in
+                    // The messenger is still open: live again (a fresh start, failures forgotten).
+                    Messenger.shared.startLive()
                     await Messenger.shared.retryPendingDeletions()
                     await Messenger.shared.refresh()
                 }
+            }
+        }
+        if backgroundObserver == nil {
+            // Leaving the app: the socket closes normally (pushes cover the rest).
+            backgroundObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+            ) { _ in
+                Task { @MainActor in Messenger.shared.live.stop() }
             }
         }
         watching = Task { [weak self] in

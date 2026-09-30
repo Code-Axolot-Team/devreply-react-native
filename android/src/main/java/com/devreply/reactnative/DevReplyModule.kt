@@ -77,7 +77,7 @@ class DevReplyModule(private val context: ReactApplicationContext) : NativeDevRe
     main.post { DevReply.deleteUser { ok -> promise.resolve(ok) } }
   }
 
-  override fun present(category: String?, message: String?, attributes: ReadableMap): Boolean {
+  override fun present(category: String?, message: String?, attributes: ReadableMap, askName: Boolean): Boolean {
     if (!DevReply.isAvailable) return false
     val values = attributes.toHashMap().filterValues { it != null }.mapValues { it.value!! }
     main.post {
@@ -86,6 +86,7 @@ class DevReplyModule(private val context: ReactApplicationContext) : NativeDevRe
         DevReplyCategory.entries.firstOrNull { it.name.equals(category, ignoreCase = true) },
         message,
         values,
+        askName,
       )
     }
     return true

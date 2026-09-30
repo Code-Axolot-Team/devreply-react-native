@@ -1,7 +1,7 @@
 import Foundation
 
 /// Version of this SDK. Sent on install registration and compared with each block's `min_sdk`.
-public let devReplySDKVersion = "0.4.4"
+public let devReplySDKVersion = "0.5.0"
 
 /// What a conversation is about. Set by the start button the user picked (spec 05).
 public enum DevReplyCategory: String, Codable, Sendable, CaseIterable {
@@ -244,6 +244,31 @@ struct Conversation: Decodable, Sendable, Identifiable, Equatable, Hashable {
         lastAuthor = (try? c.decodeIfPresent(String.self, forKey: .lastAuthor)) ?? nil
         unread = (try? c.decodeIfPresent(Int.self, forKey: .unread)) ?? nil ?? 0
     }
+
+    init(
+        id: UUID, status: String, category: DevReplyCategory?, lastText: String?, lastAuthor: String?, unread: Int,
+        lastMessageAt: Date
+    ) {
+        self.id = id
+        self.status = status
+        self.category = category
+        self.lastText = lastText
+        self.lastAuthor = lastAuthor
+        self.unread = unread
+        self.lastMessageAt = lastMessageAt
+    }
+
+    /// The list entry after a live message (what the next `GET /v1/conversations` would say). A message not
+    /// newer than the entry changes nothing (the list already has it). `onScreen`: the user sees it, so a
+    /// team reply doesn't count as unread.
+    func receiving(_ message: Message, onScreen: Bool) -> Conversation {
+        guard message.createdAt > lastMessageAt else { return self }
+        let counts = !onScreen && !message.isFromUser
+        return Conversation(
+            id: id, status: status, category: category, lastText: message.plainText,
+            lastAuthor: message.author.rawValue, unread: counts ? unread + 1 : unread, lastMessageAt: message.createdAt
+        )
+    }
 }
 
 struct Message: Decodable, Sendable, Identifiable, Equatable {
@@ -262,9 +287,12 @@ struct Message: Decodable, Sendable, Identifiable, Equatable {
     let createdAt: Date
     /// Who replied (team messages from SDK 0.4 servers). Missing or malformed = none.
     let persona: Persona?
+    /// A user message that answered a button question (0.5.0): which question, which option. Read from the
+    /// message or from any of its blocks, wherever the server puts it.
+    let answer: ButtonAnswer?
 
     private enum Keys: String, CodingKey {
-        case id, author, blocks, createdAt, persona
+        case id, author, blocks, createdAt, persona, answer
     }
 
     init(from decoder: Decoder) throws {
@@ -274,6 +302,17 @@ struct Message: Decodable, Sendable, Identifiable, Equatable {
         author = (try? c.decode(Author.self, forKey: .author)) ?? .system
         blocks = ((try? c.decodeIfPresent(Lossy<Block>.self, forKey: .blocks)) ?? nil)?.items ?? []
         persona = (try? c.decodeIfPresent(Persona.self, forKey: .persona)) ?? nil
+        answer = ((try? c.decodeIfPresent(ButtonAnswer.self, forKey: .answer)) ?? nil)
+            ?? ((try? c.decodeIfPresent(Lossy<BlockAnswer>.self, forKey: .blocks)) ?? nil)?.items.lazy.compactMap(\.answer).first
+    }
+
+    /// Only the `answer` of a block, if it has one.
+    private struct BlockAnswer: Decodable, Sendable {
+        let answer: ButtonAnswer?
+        private enum Keys: String, CodingKey { case answer }
+        init(from decoder: Decoder) throws {
+            answer = ((try? decoder.container(keyedBy: Keys.self).decodeIfPresent(ButtonAnswer.self, forKey: .answer)) ?? nil)
+        }
     }
 
     var isFromUser: Bool { author == .user }
@@ -289,10 +328,15 @@ enum Block: Decodable, Sendable, Equatable {
     case localized(key: String, fallback: String)
     case image(url: URL, width: Int?, height: Int?)
     case file(url: URL, name: String, size: Int?, mime: String?)
+    /// A team or agent reply in DevReply Markdown (0.5.0), parsed; `plain` is its plain text (previews, copy).
+    case markdown([MarkdownBlock], plain: String)
+    /// A question with answers as buttons (0.5.0): the question in Markdown, 2 to 5 options. `answered` is
+    /// the chosen option's id when the server already says so on the block itself.
+    case buttons(question: [MarkdownBlock], plain: String, options: [ButtonOption], answered: String?)
     case unsupported(fallback: String)
 
     private enum Keys: String, CodingKey {
-        case type, text, fallback, minSdk, url, width, height, name, size, mime, key
+        case type, text, fallback, minSdk, url, width, height, name, size, mime, key, options, answer
     }
 
     /// The server's resolved line, before it had a key.
@@ -315,6 +359,25 @@ enum Block: Decodable, Sendable, Equatable {
                 self = .localized(key: "system.resolved", fallback: text)
             } else {
                 self = .text(text)
+            }
+        case "markdown":
+            // The server sends min_sdk 0.5.0 (handled above): older SDKs show `fallback`, the plain text.
+            if let text = try? c.decode(String.self, forKey: .text) {
+                let blocks = Markdown.parse(text)
+                self = .markdown(blocks, plain: Markdown.plain(blocks))
+            } else {
+                self = .unsupported(fallback: fallback)
+            }
+        case "buttons":
+            // min_sdk 0.5.0 (handled above): older SDKs show `fallback`, the question and numbered options.
+            let options = ((try? c.decode(Lossy<ButtonOption>.self, forKey: .options))?.items ?? [])
+            if let text = try? c.decode(String.self, forKey: .text), !options.isEmpty {
+                let blocks = Markdown.parse(text)
+                let answered = (try? c.decode(OptionAnswer.self, forKey: .answer))?.optionId
+                self = .buttons(question: blocks, plain: Markdown.plain(blocks), options: options,
+                                answered: answered.flatMap { id in options.contains { $0.id == id } ? id : nil })
+            } else {
+                self = .unsupported(fallback: fallback)
             }
         case "image":
             if let url = try? c.decode(URL.self, forKey: .url) {
@@ -344,6 +407,8 @@ enum Block: Decodable, Sendable, Equatable {
         case .localized(let key, let fallback): L10n.has(key) ? t(key) : fallback
         case .image: t("photo")
         case .file(_, let name, _, _): name
+        case .markdown(_, let plain): plain
+        case .buttons(_, let plain, _, _): plain
         case .unsupported(let fallback): fallback
         }
     }
@@ -357,6 +422,66 @@ enum Block: Decodable, Sendable, Equatable {
             if x != y { return x < y }
         }
         return false
+    }
+}
+
+/// One answer of a button question: the server's id and what the button says.
+struct ButtonOption: Decodable, Sendable, Equatable, Identifiable {
+    let id: String
+    let label: String
+
+    private enum Keys: String, CodingKey { case id, label }
+
+    /// Both needed, the label not blank; an option without them is left out.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        let id: String
+        if let text = try? c.decode(String.self, forKey: .id) { id = text } else { id = String(try c.decode(Int.self, forKey: .id)) }
+        let label = try c.decode(String.self, forKey: .label)
+        guard !id.isEmpty, !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "option without id or label"))
+        }
+        self.id = id
+        self.label = label
+    }
+
+    init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+}
+
+/// `answer` on a buttons block: only the option matters there.
+private struct OptionAnswer: Decodable {
+    let optionId: String
+}
+
+/// Which button question a user message answers, and with which option (`POST …/messages` `answer`).
+struct ButtonAnswer: Codable, Sendable, Equatable, Hashable {
+    let messageId: UUID
+    let optionId: String
+
+    init(messageId: UUID, optionId: String) {
+        self.messageId = messageId
+        self.optionId = optionId
+    }
+
+    private enum Keys: String, CodingKey {
+        // Decoded with `convertFromSnakeCase` (API responses); encoded as the server spells it.
+        case messageId, optionId
+        case messageIdWire = "message_id", optionIdWire = "option_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        messageId = try (try? c.decode(UUID.self, forKey: .messageId)) ?? c.decode(UUID.self, forKey: .messageIdWire)
+        optionId = try (try? c.decode(String.self, forKey: .optionId)) ?? c.decode(String.self, forKey: .optionIdWire)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(messageId.uuidString.lowercased(), forKey: .messageIdWire)
+        try c.encode(optionId, forKey: .optionIdWire)
     }
 }
 
@@ -436,6 +561,9 @@ extension DevReplyAttribute {
 struct Profile: Decodable, Sendable, Equatable {
     var name: String?
     var email: String?
+    /// `PATCH /v1/me {user_id}` (0.5.0): this device's earlier user with that id got the install back, with
+    /// their old conversations (spec 03, "Same device after logout"). Reload the list.
+    var restored: Bool?
 }
 
 /// A photo or file ready to upload.

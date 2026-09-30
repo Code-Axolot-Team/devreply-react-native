@@ -356,7 +356,8 @@ struct Kicker: View {
     var body: some View {
         Text(text.uppercased())
             .font(.text(12, .bold, relativeTo: .caption))
-            .tracking(1.2)
+            // No letter spacing in Arabic and Hebrew: it breaks Arabic's joined letters.
+            .tracking(L10n.shared.isRTL ? 0 : 1.2)
             .foregroundStyle(inverted ? palette.tagText : palette.ink)
             .padding(.horizontal, inverted ? 8 : 0)
             .padding(.vertical, inverted ? 4 : 0)

@@ -56,14 +56,16 @@ public final class DevReplyBridge: NSObject {
         Task { @MainActor in done(await DevReply.deleteUser()) }
     }
 
-    @objc public func present(_ category: String?, message: String?, attributes: [String: Any]) -> Bool {
+    @objc public func present(_ category: String?, message: String?, attributes: [String: Any], askName: Bool) -> Bool {
         var context: [String: DevReplyAttribute] = [:]
         for (key, value) in attributes {
             if let a = Self.attribute(value) { context[key] = a }
         }
         let values = context
         return onMain {
-            DevReply.present(category: category.flatMap(DevReplyCategory.init(rawValue:)), message: message, attributes: values)
+            DevReply.present(
+                category: category.flatMap(DevReplyCategory.init(rawValue:)), message: message, attributes: values, askName: askName
+            )
         }
     }
 

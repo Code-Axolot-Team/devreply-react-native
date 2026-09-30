@@ -31,9 +31,12 @@ struct APIClient: Sendable {
         return d
     }()
 
-    func registerInstall(publicKey: String, device: DeviceInfo) async throws -> RegisteredInstall {
+    /// `deviceKey` (0.5.0): this device's secret for the app, kept through logout (spec 03, "Same device
+    /// after logout"). The server stores only its hash.
+    func registerInstall(publicKey: String, device: DeviceInfo, deviceKey: String? = nil) async throws -> RegisteredInstall {
         var body = device.json
         body["public_key"] = publicKey
+        if let deviceKey { body["device_key"] = deviceKey }
         do {
             return try await send("POST", "v1/installs", token: nil, body: body)
         } catch DevReplyError.unauthenticated {
@@ -77,11 +80,24 @@ struct APIClient: Sendable {
         try await send("GET", "v1/conversations/\(conversation.uuidString.lowercased())/messages", token: token)
     }
 
-    func sendMessage(token: String, conversation: UUID, text: String, attachments: [UUID]) async throws -> Message {
+    /// `answer` (0.5.0): the user tapped a button of a team question; `text` is its label. The server answers
+    /// 409 when that question was already answered.
+    func sendMessage(
+        token: String, conversation: UUID, text: String, attachments: [UUID], answer: ButtonAnswer? = nil
+    ) async throws -> Message {
         try await send(
             "POST", "v1/conversations/\(conversation.uuidString.lowercased())/messages", token: token,
-            body: MessageBody(text: text, category: nil, attachmentIds: attachments, context: [:])
+            body: MessageBody(text: text, category: nil, attachmentIds: attachments, context: [:], answer: answer)
         )
+    }
+
+    /// Live updates (0.5.0): a single-use, 60-second WebSocket URL for this install. 503 = switched off.
+    func liveTicket(token: String) async throws -> LiveTicket {
+        try await send("POST", "v1/live", token: token)
+    }
+
+    struct LiveTicket: Decodable, Sendable {
+        let url: URL
     }
 
     func updatePushToken(token: String, pushToken: String?, environment: String) async throws {
@@ -191,8 +207,10 @@ struct APIClient: Sendable {
         let attachmentIds: [UUID]
         /// Only on a new conversation, and only when the app passed some (older servers never see the key).
         let context: [String: DevReplyAttribute]
+        /// A tap on a button of a team question (0.5.0); only then is the key sent.
+        var answer: ButtonAnswer? = nil
 
-        enum CodingKeys: String, CodingKey { case text, category, attachmentIds = "attachment_ids", context }
+        enum CodingKeys: String, CodingKey { case text, category, attachmentIds = "attachment_ids", context, answer }
 
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
@@ -200,6 +218,7 @@ struct APIClient: Sendable {
             try c.encodeIfPresent(category, forKey: .category)
             try c.encode(attachmentIds, forKey: .attachmentIds)
             if !context.isEmpty { try c.encode(context, forKey: .context) }
+            try c.encodeIfPresent(answer, forKey: .answer)
         }
     }
 

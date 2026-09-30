@@ -7,7 +7,7 @@ export interface Spec extends TurboModule {
   login(userId: string): void
   logout(): void
   deleteUser(): Promise<boolean>
-  present(category: string | null, message: string | null, attributes: CodegenTypes.UnsafeObject): boolean
+  present(category: string | null, message: string | null, attributes: CodegenTypes.UnsafeObject, askName: boolean): boolean
   isAvailable(): boolean
   /** lightMode: keep | reset | custom; darkMode: keep | off | default | custom. */
   setTheme(lightMode: string, light: CodegenTypes.UnsafeObject | null, darkMode: string, dark: CodegenTypes.UnsafeObject | null): void

@@ -110,9 +110,11 @@ const DevReply = {
    * off in the dashboard (or DevReply isn't configured): then nothing opens.
    *
    *   DevReply.present('billing', { message: "My purchase didn't go through", attributes: { source: 'paywall' } })
+   *
+   * `askName: false` skips the name form while this chat is open (one tap from an error to the message).
    */
   present(category?: DevReplyCategory | null, options?: DevReplyPresentOptions): boolean {
-    return Native.present(category ?? null, options?.message ?? null, options?.attributes ?? {})
+    return Native.present(category ?? null, options?.message ?? null, options?.attributes ?? {}, options?.askName ?? true)
   },
 
   /** False when the team switched the chat off in the dashboard: hide your own "Message us" buttons. */
@@ -151,7 +153,7 @@ const DevReply = {
   },
 
   /**
-   * The chat's language: `es`, `pt-BR`, `ja`… (15 languages; others fall back to English), or null to
+   * The chat's language: `es`, `pt-BR`, `ja`… (34 languages; others fall back to English), or null to
    * follow the device. Takes effect at once, even with the chat open.
    */
   setLocale(tag: string | null): void {

@@ -56,9 +56,9 @@
   }];
 }
 
-- (NSNumber *)present:(NSString *)category message:(NSString *)message attributes:(NSDictionary *)attributes
+- (NSNumber *)present:(NSString *)category message:(NSString *)message attributes:(NSDictionary *)attributes askName:(BOOL)askName
 {
-  return @([_bridge present:category message:message attributes:attributes ?: @{}]);
+  return @([_bridge present:category message:message attributes:attributes ?: @{} askName:askName]);
 }
 
 - (NSNumber *)isAvailable

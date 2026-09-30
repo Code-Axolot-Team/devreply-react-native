@@ -3,6 +3,18 @@
 Released versions stay supported: the API only grows, and every released version's requests are replayed
 against the server on every change.
 
+## 0.5.0
+
+- 34 languages, Hebrew and Arabic right to left (from the native SDKs).
+- iOS: builds on Xcode 26.2 and in Swift 6 language mode (from the iOS SDK).
+- README: the two native checks bare apps need for deep links that arrive while the app is running (iOS
+  `RCTLinkingManager` in the AppDelegate, Android `singleTask`).
+- Everything in the native 0.5.0 SDKs: replies in Markdown, answer buttons, live updates over WebSocket while the
+  chat is open, the same account's history back after a logout on the same device, 34 languages with Hebrew and
+  Arabic right to left, the new logo on the unread bubble, and on iOS the fix for a long chat's scroll moving the sheet.
+- `present(category, { askName: false })`: no name form while this chat is open (e.g. from a failed purchase).
+- Needs `devreply-android` 0.5.0 (JitPack) and the iOS sources of 0.5.0 (bundled).
+
 ## 0.4.4
 
 * `DevReply.present(category, { message, attributes })`: prefills the new conversation's message (the user

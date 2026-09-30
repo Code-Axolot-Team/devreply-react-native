@@ -64,6 +64,46 @@ enum Keychain {
         set(String(decoding: data, as: UTF8.self), for: account, service: pendingService)
     }
 
+    /// This device's secret for the app (spec 03, "Same device after logout", 0.5.0): 256 random bits,
+    /// base64url, created once and sent with every install registration, so logging back in to the same
+    /// account on this phone gets the old conversations back. Its own service: logout, deleteUser and the
+    /// reinstall wipe keep it (it only ever helps the same account on the same phone, together with the
+    /// app's own user id). If the Keychain can't be written, one key per process.
+    private static let deviceService = "com.devreply.sdk.device"
+    nonisolated(unsafe) private static var memoryKeys: [String: String] = [:]
+    private static let memoryLock = NSLock()
+
+    static func deviceKey(for account: String) -> String {
+        if let stored = string(for: account, service: deviceService) { return stored }
+        return memoryLock.withLock {
+            if let key = memoryKeys[account] { return key }
+            let key = newDeviceKey()
+            set(key, for: account, service: deviceService)
+            // Kept in memory too: the Keychain may refuse (e.g. a test runner without access).
+            memoryKeys[account] = key
+            return key
+        }
+    }
+
+    /// 32 random bytes as base64url without padding (43 characters).
+    static func newDeviceKey() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
+            var generator = SystemRandomNumberGenerator()
+            bytes = (0..<32).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
+        }
+        return Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    /// Tests only: forget the device key of this account.
+    static func deleteDeviceKey(for account: String) {
+        delete(account: account, service: deviceService)
+        memoryLock.withLock { memoryKeys[account] = nil }
+    }
+
     /// The signed-in user this install belongs to (`DevReply.login`), if any.
     static func userID(for account: String) -> String? { token(for: "user|" + account) }
     static func setUserID(_ id: String, for account: String) { setToken(id, for: "user|" + account) }
